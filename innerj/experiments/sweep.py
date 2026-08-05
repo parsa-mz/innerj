@@ -1,0 +1,224 @@
+"""The 2D sweep: patch layer x readout layer.
+
+A one-dimensional depth sweep cannot separate two different things, and conflating
+them already cost this project a wrong conclusion.
+
+* Read at a **fixed late** layer and a shallow patch is measured after many layers of
+  possible overwriting while a deep patch is measured after few. That grades
+  *survival*, and reporting it as write strength produced an "onset at L39" that was
+  really a repair boundary.
+* Read **close above** the patch and every layer is measured at matched distance,
+  which grades whether the content was installed at all.
+
+So readout distance is a second axis, not a setting. This module records the residual
+at *every* layer above a patch in the same forward pass, giving the whole grid for
+the cost of the one-dimensional sweep: for each patch site, the donor's concept rank
+at each depth above it.
+
+Reading the grid:
+
+* a row that starts high and decays with distance  -> installed, then repaired;
+* a row flat and high                              -> installed and retained;
+* a row flat at zero                               -> never installed, and no amount
+  of downstream reading will show otherwise.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+
+import numpy as np
+import torch
+from jlens import JacobianLens
+from jlens.hf import HFLensModel
+
+from innerj import console
+from innerj.analysis.readout import ConceptScores, concept_scores
+from innerj.analysis.stats import Estimate, paired_bootstrap
+from innerj.patch import Component, capture, run_patched
+from innerj.tasks.base import Record
+
+
+@dataclass
+class Cell:
+    """One (component, readout layer) cell, pooled over pairs.
+
+    Three metrics per concept, not one. ``delta_donor`` is the percentile rank
+    ``R_z`` every published number was measured on; it **saturates** inside the
+    band this grid reads from, so the ``_logrank`` and ``_mz`` companions are what
+    decide whether a window boundary is a property of the model or of the measure.
+    Read all three before quoting any of them.
+    """
+
+    component: str
+    kind: str
+    patch_layer: int
+    read_layer: int
+    distance: int
+    delta_donor: Estimate
+    delta_target: Estimate
+    delta_donor_logrank: Estimate
+    delta_target_logrank: Estimate
+    delta_donor_mz: Estimate
+    delta_target_mz: Estimate
+    n: int
+    #: Which target instances this cell pooled over, in the order they were
+    #: measured. Without it a pooled cell cannot be re-analysed by instance, so a
+    #: discovery/confirmation split is impossible after the fact -- which is exactly
+    #: what happened to the head-level sweep, whose split had to be reported as
+    #: unavailable rather than computed.
+    instances: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@torch.no_grad()
+def sweep(
+    model: HFLensModel,
+    lens: JacobianLens,
+    pairs: list[tuple[Record, Record]],
+    components: list[Component],
+    *,
+    max_read_layer: int | None = None,
+    positions: list[int] | None = None,
+    max_seq_len: int = 512,
+) -> list[Cell]:
+    """For every component, the donor's concept rank at every layer above it.
+
+    ``pairs`` are ``(donor, target)`` with **different** latent values. One forward
+    pass per (pair, component); the readout at every depth above the patch comes off
+    that single pass.
+    """
+    positions = positions or [-1]
+    max_read = model.n_layers - 1 if max_read_layer is None else max_read_layer
+    fitted = set(lens.source_layers)
+
+    # {(component, read_layer): [12-tuple]} -- see `scores` for the layout.
+    cells: dict[tuple[str, int], list[tuple[float, ...]]] = {}
+    # Parallel to `cells`, so a pooled estimate stays traceable to its instances.
+    cell_instances: dict[tuple[str, int], list[str]] = {}
+    meta: dict[str, Component] = {str(c): c for c in components}
+
+    def scores(
+        residuals: dict[int, torch.Tensor],
+        layers: list[int],
+        token_id: int,
+        rivals: list[int],
+    ) -> dict[int, ConceptScores]:
+        """All three concept measures at every readout layer, from one pass.
+
+        ``R_z`` alone was recorded here originally, which meant the grid could not
+        be re-analysed under a non-saturating measure without repeating the sweep
+        on GPU --- and ``R_z`` saturates precisely inside the band this grid reads
+        from. The rank is computed once and shared, so the extra columns are
+        nearly free.
+        """
+        out = {}
+        for layer in layers:
+            logits = model.unembed(lens.transport(residuals[layer], layer)).float()[0]
+            out[layer] = concept_scores(logits, token_id, rivals)
+        return out
+
+    for donor, target in console.track(pairs, "sweeping"):
+        if donor.latent_token_id == target.latent_token_id:
+            raise ValueError(
+                f"{donor.id} and {target.id} share a latent value; this sweep needs "
+                f"them to differ"
+            )
+        # The instance's candidate concept set. The contrastive margin for a
+        # concept is measured against the *other* candidates, so each of the two
+        # concepts tracked here gets its own rival set -- matched by construction,
+        # and symmetric between donor and target rather than privileging either.
+        concepts = {target.latent_token_id, *target.control_token_ids}
+        donor_rivals = sorted(concepts - {donor.latent_token_id})
+        target_rivals = sorted(concepts - {target.latent_token_id})
+        if not donor_rivals or not target_rivals:
+            raise ValueError(
+                f"{target.id} has no rival concepts for the contrastive margin; the "
+                f"candidate set is {sorted(concepts)}"
+            )
+        read_all = sorted(
+            layer
+            for layer in fitted
+            if min(c.layer for c in components) < layer <= max_read
+        )
+        donor_acts = capture(
+            model, donor.prompt, components, positions=positions,
+            max_seq_len=max_seq_len,
+        )
+        _, clean = run_patched(
+            model, target.prompt, {}, positions=positions,
+            max_seq_len=max_seq_len, record_layers=read_all,
+        )
+        donor_clean = scores(clean, read_all, donor.latent_token_id, donor_rivals)
+        target_clean = scores(clean, read_all, target.latent_token_id, target_rivals)
+
+        for component in components:
+            above = [layer for layer in read_all if layer > component.layer]
+            if not above:
+                continue
+            _, patched = run_patched(
+                model, target.prompt, {component: donor_acts[component]},
+                positions=positions, max_seq_len=max_seq_len, record_layers=above,
+            )
+            donor_patched = scores(patched, above, donor.latent_token_id, donor_rivals)
+            target_patched = scores(
+                patched, above, target.latent_token_id, target_rivals
+            )
+            for layer in above:
+                dp, dc = donor_patched[layer], donor_clean[layer]
+                tp, tc = target_patched[layer], target_clean[layer]
+                cell_instances.setdefault((str(component), layer), []).append(
+                    target.semantic_instance_id
+                )
+                cells.setdefault((str(component), layer), []).append(
+                    (
+                        dp.r_z, dc.r_z, tp.r_z, tc.r_z,
+                        dp.neg_log_rank, dc.neg_log_rank,
+                        tp.neg_log_rank, tc.neg_log_rank,
+                        dp.m_z, dc.m_z, tp.m_z, tc.m_z,
+                    )
+                )
+
+    out: list[Cell] = []
+    for (name, layer), rows in cells.items():
+        arr = np.array(rows, dtype=float)
+        component = meta[name]
+        out.append(
+            Cell(
+                component=name,
+                kind=component.kind,
+                patch_layer=component.layer,
+                read_layer=layer,
+                distance=layer - component.layer,
+                delta_donor=paired_bootstrap(arr[:, 0], arr[:, 1]),
+                delta_target=paired_bootstrap(arr[:, 2], arr[:, 3]),
+                delta_donor_logrank=paired_bootstrap(arr[:, 4], arr[:, 5]),
+                delta_target_logrank=paired_bootstrap(arr[:, 6], arr[:, 7]),
+                delta_donor_mz=paired_bootstrap(arr[:, 8], arr[:, 9]),
+                delta_target_mz=paired_bootstrap(arr[:, 10], arr[:, 11]),
+                n=len(rows),
+                instances=cell_instances[(name, layer)],
+            )
+        )
+    return sorted(out, key=lambda c: (c.patch_layer, c.kind, c.read_layer))
+
+
+def at_distance(cells: list[Cell], distance: int, *, tolerance: int = 1) -> list[Cell]:
+    """Cells read roughly ``distance`` layers above their patch.
+
+    A matched-distance slice is what makes patch layers comparable to each other;
+    a fixed readout layer does not.
+    """
+    return [c for c in cells if abs(c.distance - distance) <= tolerance]
+
+
+def decay_profile(cells: list[Cell], component: str) -> list[tuple[int, float]]:
+    """``(distance, delta_donor)`` for one component -- installed then repaired?"""
+    rows = [
+        (c.distance, c.delta_donor.point)
+        for c in cells
+        if c.component == component
+    ]
+    return sorted(rows)
