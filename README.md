@@ -10,26 +10,26 @@ The answer we arrive at is **transport, not admission**. The variable is availab
 
 The paper is not in this repository. Every number in it is machine-checked against the artifact that produced it — `innerj audit` is that check, and takes the paper source with `--tex`.
 
-## The question
+## 🔍 The question
 
 Recent work identifies a set of directions whose contents a model can report on, a *verbalizable workspace*, and shows that a latent quantity is more present there when the task requires flexible reuse ([Gurnee et al., 2026](https://transformer-circuits.pub/2026/workspace/index.html)). That finding is behavioural and representational; the mechanism is left open.
 
 The vocabulary invites a guess: a workspace has contents, contents are *admitted*, admission implies a gate. We looked for that gate on an open-weight model, at the position the account predicts, and it is not there.
 
-## What we found
+## 📊 What we found
 
 | | |
 |---|---|
 | **Visibility dissociates from decodability** | Flexible demand raises the concept's J-lens visibility by `ΔR_z = +0.089 [+0.080, +0.098]` against a control matched on prompt format **and** on accuracy to within noise of exactly zero, while one shared linear map decodes the variable in every primary arm at 6.4–9.0× its selection-corrected floor. |
 | **Part of that demand is the operator, not the variable** | A fifth *supplied* arm applies the same operator to a value given in the prompt. It produces a shift 43% as large as the simple contrast **without inferring anything**, so that contrast is not by itself a latent-variable measure — and neither is any published effect built the same way. |
-| **The mechanism is transport** | At matched readout distance, transport is concentrated in a mid-depth window by at least 9× over anywhere shallower under every metric we use (24.8× under log-rank). Attention carries it in; no tested MLP output contributes positively inside the window. |
+| **The mechanism is transport** | At matched readout distance, transport is concentrated in a mid-depth window by at least 17× over anywhere shallower under the non-saturating readouts (24.8–37.8× under log-rank, over four donor pairings); under the saturating percentile rank the same grid does not localise the window at all, which is a fact about that measure. Attention carries it in; no tested MLP output contributes positively inside the window. |
 | **The window's edges are graded, not emergent** | Below it a value can be installed and does not survive to the readout; above it the intervention stops substituting and starts destroying. |
 | **The behaviour partly runs through one J-lens direction** | Projecting the concept's static J-lens vector out of the stream costs half the counterfactual effect, and survives four controls: a random direction rescaled to remove the *same* activation norm, every rival concept as a null distribution, an orthogonalised one-vs-rest variant, and a donor-minus-target projection. |
 | **A readout shift is not a calibrated measure of use** | Three components at one layer shift the lens readout to within 12% of one another and differ **7.4×** in what they do to behaviour. The readout is uncalibrated, not uninformative. |
 
 Attention transporting a value to the query position is **convergent** with what is known about factual recall and in-context task vectors, not new. What is new is that the amount transported moves with *task demand* over an identical context, for a variable whose value that context never singles out.
 
-**What does not generalise, up front.** The *site* does not. On the language family a single head at L39 matches both its own block and the whole residual stream to four decimal places; on a second family that head is null and the carrying attention is at L48, a linear-attention layer. It is a case study, never the mechanism. The second family's sweep is also underpowered per cell: the profile has the same shape, but only one layer clears zero at *n* = 50.
+**What does not generalise, up front.** The *concentration* does not. On the language family a single head at L39 matches both its own block and the whole residual stream to four decimal places, and `attn.L48` is a twenty-fifth of `attn.L39`; on a second family the two attention blocks are comparable and no head dominates, with L48 a linear-attention layer where no head decomposition is possible. The head is a case study, never the mechanism.
 
 ## The design
 
@@ -47,7 +47,7 @@ Each semantic instance yields five prompts over an **identical context**, so eve
 
 Two families: **language identity** on FLORES-200, which is *N*-way parallel so the counterfactual varies the latent variable and nothing else, and **object tracking** under swaps, where `z` is a progressively updated state.
 
-## Setup
+## ⚙️ Setup
 
 Python 3.13+, and one GPU with ~60 GB for the 27B primary checkpoint.
 
@@ -67,7 +67,7 @@ cp .env.example .env      # edit only if artifacts should live off the repo volu
 `uv sync` resolves against the committed `uv.lock`, so the dependency set is pinned. Verify the install without touching a GPU:
 
 ```bash
-uv run pytest                       # 95 guard tests, ~7s
+uv run pytest -n 16                 # 103 guard tests, ~10s
 uv run ruff check innerj tests
 ```
 
@@ -133,4 +133,8 @@ Most guards here exist because their absence produced a confident wrong answer. 
 
 Every effect size carries a bootstrap interval clustered on the semantic instance, since the arms share a passage; `excludes_zero` is the only significance claim made anywhere.
 
-The code is MIT licensed — see [LICENSE](LICENSE). **The released JGateBench records are CC BY-SA 4.0, not MIT**, because every prompt quotes a FLORES-200 passage verbatim and FLORES-200 is CC BY-SA 4.0; share-alike propagates to a derived dataset. See [DATA_LICENSE.md](DATA_LICENSE.md) for the attribution and what the split covers. The vendored `jacobian-lens/` reference implementation is cloned, not authored here, and carries its own terms.
+-----
+
+## 📄 License
+
+Code is MIT ([LICENSE](LICENSE)). **The released JGateBench records are CC BY-SA 4.0, not MIT** — every prompt quotes a FLORES-200 passage verbatim, and share-alike propagates. See [DATA_LICENSE.md](DATA_LICENSE.md). The vendored `jacobian-lens/` is cloned, not authored here, and carries its own terms.
