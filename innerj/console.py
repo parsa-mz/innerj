@@ -1,21 +1,12 @@
-"""Terminal output. One place, so that runs look the same and stay greppable.
+"""Terminal output. One place, so runs look the same and stay greppable.
 
-Two rules this module exists to enforce.
-
-**Progress must be visible.** A long GPU run that prints nothing is
-indistinguishable from a hang, and we have sat through a 27-minute silence
-against a timeout to learn it. :func:`track` wraps any iterable in a live
-progress bar with an elapsed and remaining estimate.
-
-**Progress must not become the output.** When stdout is not a terminal --- a
-``nohup`` log, a CI capture, a pipe into ``tail`` --- Rich's live redraw turns
-into thousands of near-identical lines and the log becomes unreadable. Every
-helper here degrades to a plain flushed line in that case, so the same command
-is pleasant interactively and quiet in a log file.
-
-The rest of the module is a thin vocabulary: :func:`step` for a stage boundary,
-:func:`detail` for a subordinate fact, :func:`warn` for something not to scroll
-past, and :func:`wrote` for an artifact path.
+**Progress must be visible**: a silent GPU run is indistinguishable from a hang, and we
+sat
+through a 27-minute silence against a timeout to learn it. **Progress must not become
+the
+output**: off a terminal, Rich's live redraw becomes thousands of near-identical lines,
+so
+every helper degrades to one plain flushed line.
 """
 
 from __future__ import annotations
@@ -62,15 +53,11 @@ def interactive() -> bool:
 def _say(style: str, prefix: str, message: str) -> None:
     """Write one line, styled on a terminal and plain in a log.
 
-    The branch lives here rather than in each verb. The message is passed as
-    ``style=`` rather than interpolated into markup, because interpolating it
-    makes any square bracket in the text a tag: ``wrote("/tmp/a [/tmp/b]")``
-    raised ``MarkupError`` on a terminal and printed fine in a log, so the crash
-    could not appear in a logged run. Paths and verdict strings both contain
-    brackets.
-
-    Going through ``print`` for the plain path keeps the log format ours rather
-    than a side effect of Rich's width detection and soft-wrapping.
+    The message is passed as ``style=`` rather than interpolated, because interpolation
+    makes any
+    square bracket a tag: ``wrote("/tmp/a [/tmp/b]")`` raised ``MarkupError`` on a
+    terminal and
+    printed fine in a log, so the crash could not appear in a logged run.
     """
     if interactive():
         console.print(f"{prefix}{message}", style=style, highlight=False)
@@ -99,16 +86,11 @@ def wrote(path: Path | str) -> None:
 
 
 def track[T](
-    items: Iterable[T], description: str, total: int | None = None
+    items: Iterable[T], description: str
 ) -> Iterator[T]:
-    """Iterate with a progress bar, or with periodic plain lines in a log.
-
-    The non-interactive branch prints at most twenty lines regardless of how many
-    items there are, which keeps a ``nohup`` log readable while still proving the
-    job is alive.
-    """
-    sequence = list(items) if total is None else items
-    total = total if total is not None else len(sequence)
+    """Iterate with a progress bar, or at most twenty plain lines in a log."""
+    sequence = list(items)
+    total = len(sequence)
     if total == 0:
         return
 

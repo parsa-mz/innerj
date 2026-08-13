@@ -1,11 +1,8 @@
 """Paths and environment, read once from ``.env`` rather than hardcoded.
 
-Absolute paths baked into source are the reason a repository only runs on the
-machine it was written on. Everything location-dependent is resolved here, from
-environment variables with repo-relative defaults, so a fresh checkout works with
-no edits and a shared box can point at a scratch volume by writing one file.
-
-Copy ``.env.example`` to ``.env`` and adjust. ``.env`` is gitignored.
+Absolute paths baked into source are why a repository only runs on the machine it was
+written
+on. Copy ``.env.example`` to ``.env``; it is gitignored.
 """
 
 from __future__ import annotations
@@ -19,13 +16,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 def _load_dotenv(path: Path) -> None:
     """Minimal ``.env`` reader: ``KEY=value``, ``#`` comments, no interpolation.
 
-    Deliberately not a dependency: the format we need is a handful of lines, and
-    an extra package in the install path costs more than it saves. Existing
-    environment variables win, so an explicit ``export`` still overrides the file.
-
-    Handles the three things people actually write and a naive reader gets wrong:
-    an ``export`` prefix, quotes around the value, and a trailing ``# comment``.
-    A quoted value keeps its ``#``, since a path may legitimately contain one.
+    Existing environment variables win, so an explicit ``export`` still overrides the
+    file.
+    Handles the three things a naive reader gets wrong: an ``export`` prefix, quotes,
+    and a
+    trailing ``# comment`` -- a quoted value keeps its ``#``.
     """
     if not path.is_file():
         return
@@ -62,4 +57,4 @@ FIGURE_DIR = _path("INNERJ_FIGURE_DIR", REPO_ROOT / "figures")
 
 #: The paper source, for ``innerj audit``. The paper is not part of this repository, so
 #: this is the one path that legitimately points outside it.
-PAPER_TEX = _path("INNERJ_PAPER_TEX", REPO_ROOT / "paper" / "main.tex")
+PAPER_TEX = _path("INNERJ_PAPER_TEX", REPO_ROOT / "paper" / "iclr" / "main.tex")

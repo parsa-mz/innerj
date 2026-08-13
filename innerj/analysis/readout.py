@@ -1,33 +1,22 @@
 """Dependent variables for workspace entry.
 
-Three measures of the same concept, computed together by :func:`concept_scores`
-so that no experiment can record one and lose the others:
+Three measures of one concept, computed together by :func:`concept_scores` so no
+experiment
+can record one and lose the others:
 
-* ``R_z`` (:func:`percentile_rank`) -- comparable to the source paper, and the
-  quantity every published number here was measured on. It **saturates**: 92% of
-  flexible-arm cells at L40--L44 read above 0.999, which flattens a real
-  mid-band peak.
-* ``-log10(rank)`` (:func:`neg_log_rank`) -- the non-saturating companion. It
-  moves freely where ``R_z`` is pinned at the ceiling, and it places the depth
-  peak about 15 layers deeper than ``R_z`` does (the two profiles correlate at
-  only ``r=0.581``). A conclusion that holds under one and not the other is a
-  fact about the metric.
-* ``M_z`` (:func:`logprob_margin`) -- the contrastive margin against the rival
-  concepts, i.e. ``lambda_z`` minus the mean over the other candidates. Graded,
-  unbounded, and unaffected by ceiling effects in either direction.
+* ``R_z`` (:func:`percentile_rank`) -- what every published number was measured on. It
+  **saturates**: ranks 1 and 25 differ by 0.0001 on 248,320 tokens, and 92% of
+  flexible-arm cells at L40--L44 read above 0.999.
+* ``-log10(rank)`` (:func:`neg_log_rank`) -- the non-saturating companion, placing the
+  depth peak ~15 layers deeper (the profiles correlate at only ``r=0.581``).
+* ``M_z`` (:func:`logprob_margin`) -- the margin against rival candidates.
 
-Every one is invariant to a function-preserving rescaling of the residual stream
-``h_l -> C_l h_l``, because each is read *after* the model's own final norm,
-which is scale-free. That rules out the class of diagnostics that turn out to
-measure a coordinate choice rather than a property of the model: raw coefficient
-magnitude, raw distance to the identity, and unnormalised lens norms never appear
-here, and must not support a claim.
-
-The sparse nonnegative pursuit coefficient (``j_access``) is deliberately absent:
-with a support of ``k~16`` it is a *step function of rank*, reading exactly 0.000
-whenever the concept ranks below the support size, so a run of zeros carries no
-trend and any correlation against it is zero by construction. It belongs in a
-secondary column, added when there is a rank effect to corroborate.
+All three are read after the model's own scale-free final norm, so all three are
+invariant
+to a function-preserving rescale. Raw coefficient magnitude, distance to identity and
+unnormalised lens norms are not, and must not support a claim. ``j_access`` is absent:
+with
+support ``k~16`` it is a step function of rank, so a run of zeros carries no trend.
 """
 
 from __future__ import annotations
@@ -40,16 +29,13 @@ import torch
 
 
 def single_token_id(tokenizer: Any, word: str, *, continuation: bool = True) -> int:
-    """Token id for ``word``, requiring it to be exactly one token.
+    """Token id for ``word``, requiring exactly one token.
 
-    ``continuation=True`` scores the mid-sentence form (``" Spanish"``), which
-    is what a model emits after a prompt ending in ``"Answer:"``. The bare form
-    is a *different id* on any BPE vocabulary, and scoring it instead is worth
-    the difference between 0/36 and 10/36 on a real checkpoint.
-
-    Raises:
-        ValueError: If the form is not single-token for this tokenizer. Labels
-            that fail are excluded from the dataset rather than worked around.
+    ``continuation=True`` scores the mid-sentence form (``" Spanish"``), a *different
+    id* from
+    the bare form: worth 0/36 against 10/36 on a real checkpoint. Failing labels are
+    excluded
+    from the dataset, never worked around.
     """
     form = f" {word}" if continuation else word
     ids = tokenizer.encode(form, add_special_tokens=False)
@@ -71,36 +57,20 @@ def concept_rank(logits: torch.Tensor, token_id: int) -> int:
 
 
 def percentile_rank(logits: torch.Tensor, token_id: int) -> float:
-    """``R_z``: 1.0 when the concept is top-1, 0.0 when last.
-
-    A percentile rather than a raw rank so that the quantity is comparable
-    across checkpoints with different vocabulary sizes.
-
-    **This measure saturates**, and the saturation is not benign. With a
-    248,320-token vocabulary, ranks 1 and 25 differ by 0.0001, so once a concept
-    is anywhere near the top the score is pinned: 92% of flexible-arm cells at
-    L40--L44 read above 0.999. A depth profile built from it therefore flattens
-    exactly where the effect is largest. Pair it with :func:`neg_log_rank`, which
-    resolves that region, and treat any conclusion that holds under one and not
-    the other as a fact about the metric rather than about the model.
+    """``R_z``: 1.0 when the concept is top-1, 0.0 when last. Saturates -- always pair
+        with :func:`neg_log_rank`.
     """
     vocab = logits.shape[0]
     return 1.0 - concept_rank(logits, token_id) / (vocab - 1)
 
 
 def neg_log_rank(logits: torch.Tensor, token_id: int) -> float:
-    """``-log10(rank)`` on a 1-indexed rank: the non-saturating companion to ``R_z``.
+    """``-log10(rank)``, 1-indexed: the non-saturating companion to ``R_z``.
 
-    Rank is 1-indexed here so that top-1 maps to ``0.0`` and the logarithm is
-    always defined; larger is better, matching ``R_z``'s direction so the two can
-    be read off the same axis sign. Unlike ``R_z`` the spacing is even in orders
-    of magnitude, so rank 1 -> 2 and rank 1000 -> 2000 move it equally --- which
-    is the whole point, since the interesting region for a concept entering the
-    workspace is the top few hundred of a quarter-million-token vocabulary, and
-    ``R_z`` compresses all of it into its last thousandth.
-
-    It is *not* bounded, and it is not comparable across vocabulary sizes the way
-    ``R_z`` is. Both are recorded; neither replaces the other.
+    Even spacing in orders of magnitude is the point, the interesting region being the
+    top few
+    hundred of a quarter-million tokens. Unbounded, and not comparable across vocabulary
+    sizes.
     """
     return -math.log10(concept_rank(logits, token_id) + 1)
 
@@ -110,10 +80,9 @@ def logprob_margin(
 ) -> float:
     """``M_z``: log-prob of the concept minus the mean over matched controls.
 
-    Controls carry the work here. An overcomplete readout assigns *some* mass to
-    almost anything, so an absolute score is uninterpretable; the contrast
-    against frequency- and part-of-speech-matched tokens is what makes it a
-    measurement. Pass controls that are matched, not merely arbitrary.
+    An overcomplete readout assigns *some* mass to almost anything, so the contrast
+    carries the
+    measurement; controls must be matched on frequency and part of speech.
     """
     if not control_ids:
         raise ValueError("logprob_margin needs at least one matched control")
@@ -123,13 +92,8 @@ def logprob_margin(
 
 @dataclass(frozen=True)
 class ConceptScores:
-    """All three concept measures from one logit vector.
-
-    Exists so that an experiment cannot record one metric and lose the others.
-    Every patching artifact written before this class stored ``R_z`` alone, which
-    meant the saturation question could not be answered without re-running the
-    model --- hours of GPU per sweep to recover a number that was free at
-    measurement time. Emit the whole struct.
+    """All three measures from one logit vector, so an experiment cannot record one and
+        lose the others -- recovering a missing one costs a full GPU re-run.
     """
 
     rank: int
@@ -141,11 +105,7 @@ class ConceptScores:
 def concept_scores(
     logits: torch.Tensor, token_id: int, control_ids: list[int]
 ) -> ConceptScores:
-    """Rank, ``R_z``, ``-log10(rank)`` and ``M_z`` in one pass.
-
-    The rank is computed once and the two rank-derived measures share it, so this
-    costs no more than :func:`percentile_rank` alone plus one log-softmax.
-    """
+    """Rank, ``R_z``, ``-log10(rank)`` and ``M_z`` in one pass, sharing one rank."""
     rank = concept_rank(logits, token_id)
     vocab = logits.shape[0]
     return ConceptScores(
@@ -156,20 +116,71 @@ def concept_scores(
     )
 
 
+def single_token_subset(tokenizer: Any, words: list[str]) -> list[str]:
+    """Keep the words that are one token in continuation form (trap 6: never assume)."""
+    out = []
+    for word in words:
+        try:
+            single_token_id(tokenizer, word)
+        except ValueError:
+            continue
+        out.append(word)
+    return out
+
+
+def transported_logits(
+    model: Any, lens: Any, residuals: dict[int, torch.Tensor], layer: int, *, row: int
+) -> torch.Tensor:
+    """Vocabulary logits from a recorded residual, through the lens at ``layer``.
+
+    ``row`` is keyword-only with no default (trap 7): for a one-position patch ``[0]``
+    and
+    ``[-1]`` agree, but on a ``last12`` span ``[0]`` is twelve positions before the
+    query and
+    the number still looks fine.
+    """
+    return model.unembed(lens.transport(residuals[layer], layer)).float()[row]
+
+
+def band_scores(
+    model: Any,
+    lens: Any,
+    residuals: dict[int, torch.Tensor],
+    layers: list[int],
+    token_id: int,
+    control_ids: list[int],
+    *,
+    row: int,
+) -> tuple[float, float, float]:
+    """Mean ``(R_z, -log10(rank), M_z)`` of ``token_id`` over ``layers``.
+
+    Reuses residuals from a pass already run, which is what makes a several-hundred-cell
+    sweep
+    affordable.
+    """
+    scores = [
+        concept_scores(
+            transported_logits(model, lens, residuals, layer, row=row),
+            token_id,
+            control_ids,
+        )
+        for layer in layers
+    ]
+    return (
+        float(sum(s.r_z for s in scores) / len(scores)),
+        float(sum(s.neg_log_rank for s in scores) / len(scores)),
+        float(sum(s.m_z for s in scores) / len(scores)),
+    )
+
+
 def forced_choice(
     logits: torch.Tensor, candidate_ids: list[int]
 ) -> tuple[int, float]:
-    """Argmax restricted to the task's candidate set, and the winner's margin.
+    r"""Argmax over the task's candidates, with the winner's margin over the best rival.
 
-    Open-vocabulary argmax measures output formatting, not knowledge: on the
-    primary checkpoint the top token is often ``'\\n\\n'`` with the gold answer
-    at rank 1, which reads as 0.144 accuracy where forced choice over the same
-    trials reads 0.955. Behavioural accuracy is always forced choice; the
-    open-vocabulary number is kept only as a diagnostic.
-
-    Returns:
-        ``(winning_id, margin)`` where margin is the winner's logit minus the
-        best rival's. Margin is 0.0 for a single candidate.
+    Open-vocabulary argmax measures formatting: the top token is often ``'\n\n'`` with
+    gold at
+    rank 1, reading 0.144 accuracy where forced choice reads 0.955.
     """
     if not candidate_ids:
         raise ValueError("forced_choice needs a candidate set")
@@ -199,12 +210,10 @@ class LayerReadout:
 class EntryReadout:
     """Per-layer readouts for one trial, plus band summaries.
 
-    ``band_mean_r_z`` is the primary summary. ``band_r_z`` (the maximum) is kept
-    as a secondary because it **saturates**: a maximum over ~36 band layers reads
-    near 1.0 whenever any single layer ranks the concept well, which compresses a
-    real per-layer effect of +0.64 down to +0.02. That is a property of a
-    saturating order statistic over many draws, not a property of the model, and
-    it is the reason the mean leads.
+    ``band_mean_r_z`` is primary; ``band_r_z`` (the maximum) is secondary, since a max
+    over ~36
+    layers reads near 1.0 whenever any one ranks the concept well, compressing +0.64 to
+    +0.02.
     """
 
     gold_token_id: int
@@ -212,7 +221,7 @@ class EntryReadout:
 
     @property
     def band_mean_r_z(self) -> float:
-        """Mean ``R_z`` across the band -- the primary summary DV."""
+        """Mean ``R_z`` across the band: the primary summary DV."""
         if not self.layers:
             return float("nan")
         return sum(lr.r_z for lr in self.layers) / len(self.layers)
@@ -225,12 +234,8 @@ class EntryReadout:
 
     @property
     def band_mean_neg_log_rank(self) -> float:
-        """Mean ``-log10(rank)`` across the band: the non-saturating companion.
-
-        Where ``band_mean_r_z`` is pinned near 1.0 this still moves, which is why
-        both are reported. They disagree about *where* in depth the concept is
-        most visible, and that disagreement is a result, not a nuisance.
-        """
+        """Mean ``-log10(rank)`` across the band; moves where ``R_z`` is pinned near
+        1."""
         if not self.layers:
             return float("nan")
         return sum(lr.neg_log_rank for lr in self.layers) / len(self.layers)
@@ -251,11 +256,7 @@ class EntryReadout:
         return max(self.layers, key=lambda lr: lr.r_z).layer
 
     def n_layers_above(self, threshold: float) -> int:
-        """How many band layers hold the concept above ``threshold`` of ``R_z``.
-
-        A breadth measure: a concept present across many layers is more securely
-        in the workspace than one that spikes at a single depth.
-        """
+        """How many band layers hold the concept above ``threshold`` of ``R_z``."""
         return sum(1 for lr in self.layers if lr.r_z > threshold)
 
 

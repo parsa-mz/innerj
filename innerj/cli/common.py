@@ -1,26 +1,20 @@
 """Shared scaffolding for the command-line entry points.
 
-Every experiment CLI is the same five blocks around a different middle: parse the
-standard flags, select the instances complete in the arms it contrasts, load the
-model and its lens, run, then write observations and a pooled summary. Only the
-middle differs, so everything else lives here once.
+Every experiment CLI is the same five blocks around a different middle: parse flags,
+select
+instances, load model and lens, run, write observations and a summary. Each block has a
+way
+of going quietly wrong, and a copy in ten files is ten places for the guard to be
+missing --
+an artifact without its ``args`` cannot be re-derived; one without its position mode
+cannot
+be split by it (trap 16); a readout at an unfitted layer returns plausible numbers; an
+empty
+arm reports a meaningless null.
 
-That is not tidiness. Each of these blocks has a way of going quietly wrong, and a
-copy of it in ten files is ten places for the guard to be missing:
-
-* an artifact written without its ``args`` is a number nobody can re-derive
-  (:func:`write`);
-* an artifact written without its position mode cannot be split by that mode
-  afterwards, which has already forced one reconstruction from row order
-  (:func:`query_span`, trap 16);
-* a readout at a layer the lens never fitted returns plausible numbers
-  (:func:`readout_layers`);
-* an arm that ends up empty reports a clean null that means nothing
-  (:func:`instances`).
-
-Nothing here decides anything scientific. The guards that do
-(:func:`innerj.model.check_positions`, the label-symmetry checks, the verdict
-functions) stay where they are and are called explicitly.
+**Which exception:** ``experiments/`` raises ``ValueError`` -- a library, the caller
+decides
+-- and ``cli/`` raises ``SystemExit`` with a message a person can act on.
 """
 
 from __future__ import annotations
@@ -34,7 +28,7 @@ from typing import Any
 import torch
 
 from innerj import config, console
-from innerj.model import QWEN27B, band, load_lens, load_model
+from innerj.model import QWEN27B, band, load_lens, load_model, model_slug
 from innerj.patch import Component
 from innerj.positions import build, describe
 from innerj.tasks.base import Condition, Record, complete_instances, read_jsonl
@@ -66,16 +60,11 @@ SHARED_FLAGS: dict[str, tuple[tuple[str, ...], dict[str, Any]]] = {
 
 
 def parser(description: str, *, needs: tuple[str, ...] = ()) -> argparse.ArgumentParser:
-    """An argument parser carrying whichever standard flags this CLI needs.
+    """A parser carrying whichever of :data:`SHARED_FLAGS` this CLI needs.
 
-    ``needs`` selects from :data:`SHARED_FLAGS`. Anything specific to one
-    experiment is added by the caller afterwards, so a reader can tell at a glance
-    which arguments are shared and which are the experiment's own.
-
-    An unknown key raises. So does a bare string, which is the failure this guard
-    exists for: ``needs=("device")`` is not a tuple, and ``"model" in "device"``
-    is merely False, so a missing comma used to drop every flag silently and the
-    CLI ran with defaults it never declared.
+    An unknown key raises, and so does a bare string: ``needs=("device")`` is not a
+    tuple, and
+    ``"model" in "device"`` is merely False, so a missing comma used to drop every flag.
     """
     if isinstance(needs, str):
         raise TypeError(f"needs must be a tuple, got the string {needs!r}")
@@ -94,14 +83,9 @@ def parser(description: str, *, needs: tuple[str, ...] = ()) -> argparse.Argumen
 def load(args: argparse.Namespace, *, lens: bool = True) -> tuple[Any, Any]:
     """Load the checkpoint and, unless told otherwise, its lens.
 
-    Announces what was loaded, because a run against the wrong lens produces
-    entirely plausible numbers and the artifact is the only other place that
-    records which one it was.
-
-    Honours ``--dtype`` when the caller declares it. The default is bf16, but an
-    exactness check has to run in fp32: the same construction in bf16 drifts a few
-    percent over 64 layers from accumulation alone and looks like a broken
-    derivation rather than a rounding floor.
+    Announces what was loaded, since a run against the wrong lens produces plausible
+    numbers.
+    ``--dtype`` matters because an exactness check must run in fp32.
     """
     dtype = getattr(args, "dtype", None)
     console.step(f"loading {args.model}" + (f" ({dtype})" if dtype else ""))
@@ -127,11 +111,8 @@ def load(args: argparse.Namespace, *, lens: bool = True) -> tuple[Any, Any]:
 
 
 def readout_layers(model, lens, requested: list[int] | None = None) -> list[int]:
-    """Band layers that the lens actually fitted, refusing an empty intersection.
-
-    ``apply()`` will happily read a layer the lens never fitted and return
-    numbers, so the intersection is taken here and an empty one is fatal rather
-    than silent.
+    """Band layers the lens actually fitted; an empty intersection is fatal, because
+        ``apply()`` will read an unfitted layer and return numbers.
     """
     layers = [
         layer for layer in (requested or band(model.n_layers))
@@ -165,19 +146,11 @@ def instances(
 ) -> dict[str, dict[Condition, Record]]:
     """Instances present in every one of ``arms``, restricted to those arms.
 
-    ``arms`` means *these arms*, not *at least these*. Every dataset here carries
-    all four conditions, so returning whatever an instance happens to have would
-    silently add a fourth row to a three-arm design --- which it did: an ablation
-    over flexible/report/control reported an automatic arm too.
-
-    An instance missing from one arm would unbalance a comparison that is only
-    meaningful paired, and an empty result reports a clean null that means
-    nothing --- so the empty case raises rather than returning ``{}``.
-
-    ``limit`` defaults to ``--pairs`` where the CLI declares it. A limit of ``0``
-    or ``None`` means no cap. Selection is by sorted instance id, never by
-    sampling: two CLIs run over the same cap must see the same instances or their
-    results cannot be compared.
+    ``arms`` means *these arms*, not *at least these* -- returning whatever an instance
+    has once
+    added a fourth row to a three-arm design. Empty raises. Selection is by sorted
+    instance id,
+    never sampling, so two CLIs at the same cap see the same instances.
     """
     groups = complete_instances(list(read_jsonl(args.records)), arms)
     if not groups:
@@ -198,12 +171,11 @@ def instances(
 
 
 def query_span(args: argparse.Namespace) -> tuple[list[int], str]:
-    """The final ``--last-n`` prompt positions, with the label to stamp on rows.
+    """The final ``--last-n`` positions, with the label to stamp on rows.
 
-    The label comes from :func:`innerj.positions.build` rather than being typed, so
-    it cannot drift from the format the position-mode CLIs record. Every
-    observation carries it: an artifact that omits the position mode cannot be
-    re-analysed by it, which once forced a reconstruction from row order.
+    The label comes from :func:`innerj.positions.build` rather than being typed, so it
+    cannot
+    drift from what the position-mode CLIs record.
     """
     positions = list(range(-args.last_n, 0))
     label = describe(build("query", args.last_n))
@@ -217,17 +189,26 @@ def _plain(value: Any) -> Any:
     return value
 
 
+def artifact(subdir: str, stem: str, kind: str = "results") -> Path:
+    """The one place an artifact path is composed, so renaming a stem breaks the build
+        loudly rather than at figure time.
+    """
+    suffix = {
+        "results": ".json",
+        "observations": "_observations.jsonl",
+        "raw": ".jsonl",
+    }[kind]
+    return DATA_ROOT / subdir / f"{stem}{suffix}"
+
+
 def write(
     subdir: str, stem: str, payload: dict[str, Any], *, args: argparse.Namespace
 ) -> Path:
-    """Write a result artifact under the data root, always stamped with ``args``.
-
-    Every artifact carries the arguments that produced it. That is the difference
-    between a number one can re-derive and a number one can only trust.
+    """Write a result artifact under the data root, always stamped with ``args`` -- the
+        difference between a number one can re-derive and one can only trust.
     """
-    out = DATA_ROOT / subdir
-    out.mkdir(parents=True, exist_ok=True)
-    path = out / f"{stem}.json"
+    path = artifact(subdir, stem, "results")
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps({"args": vars(args), **payload}, indent=2, default=_plain)
     )
@@ -236,16 +217,14 @@ def write(
 
 
 def write_lines(subdir: str, stem: str, rows: list[Any]) -> Path:
-    """Write per-observation rows as JSONL beside their summary.
+    """Per-observation rows as JSONL beside their summary.
 
-    ``default=_plain`` rather than ``default=str`` so a nested dataclass lands as
-    a JSON object. Stringified, an ``Estimate`` becomes the prose
-    ``"+0.0891 [+0.0799, +0.0983]"``, which ``innerj audit`` cannot see as a
-    number and which no downstream re-analysis can parse.
+    ``default=_plain`` rather than ``default=str``: stringified, an ``Estimate`` becomes
+    the
+    prose ``"+0.0891 [+0.0799, +0.0983]"``, which the audit cannot see as a number.
     """
-    out = DATA_ROOT / subdir
-    out.mkdir(parents=True, exist_ok=True)
-    path = out / f"{stem}.jsonl"
+    path = artifact(subdir, stem, "raw")
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(json.dumps(_plain(r), default=_plain) for r in rows))
     console.wrote(path)
     return path
@@ -259,17 +238,12 @@ def save(
     results: list[Any],
     **extra: Any,
 ) -> Path:
-    """The standard artifact pair: ``<stem>_observations.jsonl`` and
-    ``<stem>_results.json``.
+    """The standard pair: ``<stem>_observations.jsonl`` and ``<stem>_results.json``.
 
-    Both are written, always together and always under the same stem. The
-    observations are the evidence and the results are one pooling of it, so a
-    results file without its observations cannot be re-pooled --- and re-pooling is
-    the only way to correct a summary written by code that has since changed, which
-    this project has had to do.
-
-    ``**extra`` goes into the results file beside ``results``: the layers read, the
-    pair count, whatever else the experiment needs to be interpretable.
+    Always together under one stem. A results file without its observations cannot be
+    re-pooled, and re-pooling is the only way to correct a summary written by code that
+    has
+    since changed.
     """
     name = stem(args, dataset=False)
     write_lines(subdir, f"{name}_observations", observations)
@@ -282,19 +256,19 @@ def save(
 
 
 def _to_dict(result: Any) -> Any:
-    """Prefer a result's own ``to_dict``: several add a verdict or a derived field
-    that ``asdict`` alone would drop."""
+    """Prefer a result's own ``to_dict``: several add a field ``asdict`` would drop."""
     return result.to_dict() if hasattr(result, "to_dict") else _plain(result)
 
 
 def stem(args: argparse.Namespace, *extra: str, dataset: bool = True) -> str:
-    """``tag_model_dataset`` --- the naming every artifact on disk already uses.
+    """``tag_model_dataset``, the naming every artifact already uses.
 
-    ``dataset=False`` drops the records name. The patching experiments have always
-    written ``tag_model``, and :mod:`innerj.figures.build` opens four of those by
-    exact filename, so a re-run must land on the name it landed on before.
+    ``dataset=False`` drops the records name: the patching experiments write
+    ``tag_model`` and
+    the figure module opens four by exact filename, so a re-run must land on the same
+    name.
     """
-    parts = [args.tag, args.model.split("/")[-1]]
+    parts = [args.tag, model_slug(args.model)]
     if dataset and getattr(args, "records", None):
         parts.append(Path(args.records).stem)
     parts.extend(extra)

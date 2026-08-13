@@ -9,15 +9,17 @@ from __future__ import annotations
 
 from innerj import console
 from innerj.cli import common
-from innerj.experiments.screen import readout_layers
+from innerj.experiments.screen import layers_above
 from innerj.experiments.specificity import (
     mismatched_pairs,
     pool_specificity,
     specificity,
 )
+from innerj.positions import build, describe
 from innerj.tasks.base import Condition
 
-CONTRAST = (Condition.FLEXIBLE, Condition.AUTOMATIC)
+#: Both arms this CLI needs complete. Order is the log label only.
+ARMS = (Condition.FLEXIBLE, Condition.AUTOMATIC)
 
 
 def main() -> None:
@@ -38,11 +40,35 @@ def main() -> None:
         help="which arm receives the patch. Use 'flexible' when the readout must "
         "explain a counterfactual measured on the flexible arm.",
     )
+    parser.add_argument(
+        "--where",
+        nargs="+",
+        default=["query"],
+        choices=["query", "passage", "both"],
+        help="position modes, run one after another. 'both' patches the passage tail "
+        "as well as the query tail, which removes the source the repair account says "
+        "the layers above a patch re-derive the target's value from. Pair it with a "
+        "span-matched query-only arm, or a rise cannot be told from having patched "
+        "more tokens.",
+    )
+    parser.add_argument(
+        "--last-n", type=int, nargs="+", default=[1],
+        help="span in tokens, per --where mode or one value for all. Two spans on the "
+        "same mode gives the span-matched control.",
+    )
     parser.set_defaults(tag="specificity")
     args = parser.parse_args()
 
+    spans = args.last_n if len(args.last_n) > 1 else args.last_n * len(args.where)
+    if len(spans) != len(args.where):
+        parser.error(
+            f"--last-n has {len(args.last_n)} values for {len(args.where)} --where "
+            f"modes; pass one span per mode or a single span for all"
+        )
+    modes = [build(mode, span) for mode, span in zip(args.where, spans, strict=True)]
+
     components = [common.parse_component(c) for c in args.components]
-    grouped = common.instances(args, CONTRAST)
+    grouped = common.instances(args, ARMS)
     flexible = {i: g[Condition.FLEXIBLE] for i, g in grouped.items()}
     targets = (
         flexible
@@ -53,19 +79,27 @@ def main() -> None:
     console.detail(f"{len(pairs)} mismatched-donor pairs")
 
     model, lens = common.load(args)
-    read = readout_layers(
+    read = layers_above(
         [c.layer for c in components], model.n_layers, n_readout=args.n_readout
     )
     console.detail(f"components {[str(c) for c in components]}, reading R_z at {read}")
 
-    observations = specificity(model, lens, pairs, components, read_layers=read)
+    observations = []
+    for positions in modes:
+        console.step(describe(positions))
+        observations += specificity(
+            model, lens, pairs, components, read_layers=read, positions=positions
+        )
     results = pool_specificity(observations, seed=args.seed)
 
     console.table(
         "does the patch carry the donor's value, or just disrupt the target's?",
-        ["component", "delta donor R_z", "delta target R_z", "verdict"],
+        ["component", "positions", "delta donor R_z", "delta target R_z", "verdict"],
         [
-            [r.component, str(r.delta_donor), str(r.delta_target), r.verdict()]
+            [
+                r.component, r.positions, str(r.delta_donor), str(r.delta_target),
+                r.verdict(),
+            ]
             for r in results
         ],
     )

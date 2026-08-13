@@ -1,28 +1,20 @@
 """Object tracking: the second family, and the first test that the result is not
 about language.
 
-The latent variable ``z`` is the item a given person holds after a sequence of
-swaps. Against language identity almost everything about the surface changes ---
-narrative rather than passage, state tracking rather than recognition, a
-progressively updated value rather than a static property --- while the
-four-condition structure is identical. If the depth window and the gather site
-replicate here, they are not facts about language.
+``z`` is the item a person holds after a sequence of swaps. Almost everything about the
+surface changes -- narrative rather than passage, state tracking rather than
+recognition, a
+progressively updated value rather than a static property -- while the four-condition
+structure is identical, so a window and gather that replicate here are not facts about
+language.
 
-Two constraints shaped this design, and the first one killed the family we tried
-first.
-
-**Numeric latents are unscoreable on this tokenizer.** No digit is single-token in
-continuation form on Qwen (`" 7"` is two tokens), so any family whose answer is a
-number cannot be read against a token-indexed lens. Program variables were
-abandoned for exactly this. Item names are words and pass.
-
-**The answer must be derived, not copied --- but symmetric copying is fine.** Every
-item is named in the opening lines, so all candidates appear in the prompt equally.
-That symmetry is what makes the contrast valid, and it is the same situation as the
-language family's shared operator table: contamination that applies identically to
-every candidate cannot favour one. What is *not* allowed is the answer being
-readable off a single position, so the tracked person's final item is required to
-differ from their initial one --- the value has to be computed through the swaps.
+**Numeric latents are unscoreable on this tokenizer**: no digit is single-token in
+continuation form on Qwen (``" 7"`` is two tokens), which is why program variables were
+abandoned. **The answer must be derived, not copied** -- every item is named up front,
+so
+contamination applies identically to every candidate and cannot favour one, but the
+tracked
+person's final item must differ from their initial one.
 """
 
 from __future__ import annotations
@@ -31,7 +23,7 @@ import random
 from dataclasses import dataclass
 from typing import Any
 
-from innerj.analysis.readout import single_token_id
+from innerj.analysis.readout import single_token_id, single_token_subset
 from innerj.tasks.base import Condition, Record, check_label_symmetry
 
 #: Items, split by whether they are edible. The split drives the automatic
@@ -61,13 +53,11 @@ class TrackingConfig:
 
     Attributes:
         n_instances: Semantic instances; each yields up to 4 records.
-        n_people: People, hence items in play. Also the candidate-set size.
-        n_swaps: Swap operations. More swaps means more tracking depth, traded
-            against the model's reliability --- the family is useless if low-load
-            accuracy sits at floor.
-        matched_legend: Carry the operator table in every condition, so the label is
-            printed in all arms or none.
-        seed: Controls names, items, swaps and tables.
+        n_people: People, hence items in play, hence the candidate-set size.
+        n_swaps: Tracking depth, traded against reliability -- the family is useless if
+            low-load accuracy sits at floor.
+        matched_legend: Carry the operator table in every condition.
+        seed: Names, items, swaps and tables.
     """
 
     n_instances: int = 400
@@ -77,27 +67,16 @@ class TrackingConfig:
     seed: int = 0
 
 
-def _single_token_subset(tokenizer: Any, words: list[str]) -> list[str]:
-    out = []
-    for word in words:
-        try:
-            single_token_id(tokenizer, word)
-        except ValueError:
-            continue
-        out.append(word)
-    return out
-
-
 def usable_items(tokenizer: Any) -> tuple[list[str], list[str]]:
     """Single-token edible and inedible items for this tokenizer."""
     return (
-        _single_token_subset(tokenizer, EDIBLE),
-        _single_token_subset(tokenizer, INEDIBLE),
+        single_token_subset(tokenizer, EDIBLE),
+        single_token_subset(tokenizer, INEDIBLE),
     )
 
 
 def usable_symbols(tokenizer: Any) -> list[str]:
-    return _single_token_subset(tokenizer, OPERATOR_SYMBOLS)
+    return single_token_subset(tokenizer, OPERATOR_SYMBOLS)
 
 
 def generate(tokenizer: Any, config: TrackingConfig | None = None) -> list[Record]:
@@ -116,7 +95,7 @@ def generate(tokenizer: Any, config: TrackingConfig | None = None) -> list[Recor
         raise ValueError(
             f"only {len(symbols_pool)} single-token symbols; need {config.n_people}"
         )
-    names_pool = _single_token_subset(tokenizer, NAMES)
+    names_pool = single_token_subset(tokenizer, NAMES)
     if len(names_pool) < config.n_people:
         raise ValueError(
             f"only {len(names_pool)} single-token names; need {config.n_people}"

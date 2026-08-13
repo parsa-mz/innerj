@@ -1,50 +1,29 @@
-"""Numerical check that the paper's dependent variables survive a
-function-preserving reparameterisation of the residual stream, and that the
-matrix diagnostics we refuse to use do not.
+r"""Numerical check that the paper's dependent variables survive a
+function-preserving reparameterisation of the residual stream, and that the matrix
+diagnostics we refuse to use do not.
 
-The reparameterisation. Write $o_\\ell$ for the output of block $\\ell$, with
-$o_{-1}$ the embedding, so
-$o_\\ell = o_{\\ell-1} + F_\\ell(\\mathrm{norm}(o_{\\ell-1}))$.
-Pick any positive $a_\\ell$ and build a network whose residual stream is
-$\\tilde o_\\ell = a_\\ell o_\\ell$:
+For $o_\ell = o_{\ell-1} + F_\ell(\mathrm{norm}(o_{\ell-1}))$ and any positive $a_\ell$
+there is a network whose stream is $\tilde o_\ell = a_\ell o_\ell$: scale the embedding
+by
+$a_{-1}$, block $\ell$'s output projections by $a_{\ell-1}$, and its output by
+$a_\ell / a_{\ell-1}$. A pre-norm block reads through a scale-free normaliser, so the
+logits
+are unchanged and nothing is approximated.
 
-* scale the embedding by $a_{-1}$;
-* scale block $\\ell$'s output projections by $a_{\\ell-1}$;
-* multiply block $\\ell$'s output by $a_\\ell / a_{\\ell-1}$ --- a scalar on the
-  residual path, which real architectures carry.
+The gauge must vary with depth: a *global* rescale leaves $J_\ell$ **unchanged** and
+makes no
+point, while a depth-varying one gives $\tilde J_\ell = (a_{L-1}/a_\ell) J_\ell$. So
+under a
+step gauge three things must hold, each measured here: the logits do not move; $R_z$
+does not
+move at any band layer; and the mean diagonal of $J_\ell$ *does*, by $s$ below the step
+and
+by 1 at or above. Every diagnostic homogeneous of nonzero degree in $J$ therefore
+reports a
+coordinate choice.
 
-Because a pre-norm block reads through a scale-free normaliser,
-$\\mathrm{norm}(\\tilde o_{\\ell-1}) = \\mathrm{norm}(o_{\\ell-1})$, so every block
-computes the same function of the same argument and
-$\\mathrm{logits} = W_U\\,\\mathrm{norm}(\\tilde o_{L-1})$ is unchanged. Nothing is
-approximated: this is a different network computing the same function.
-
-Why the gauge must vary with depth. Under a *global* rescale $a_\\ell \\equiv c$
-both $o_\\ell$ and $o_{L-1}$ scale by $c$, so
-$J_\\ell = \\partial o_{L-1} / \\partial o_\\ell$ is **unchanged** and such a gauge
-makes no point at all. Under a depth-varying one,
-$\\tilde J_\\ell = (a_{L-1}/a_\\ell)\\, J_\\ell$, and that factor is exactly what the
-matrix diagnostics pick up.
-
-So with a step gauge --- $a_\\ell = 1$ below layer $k$ and $a_\\ell = s$ at or above
-it --- three things must hold, and each is measured here rather than asserted:
-
-1. **The logits do not move.** Same function, different weights.
-2. **$R_z$ does not move**, at any band layer. The readout
-   $W_U\\,\\mathrm{norm}(J_\\ell h_\\ell)$ is invariant because
-   $\\tilde J_\\ell \\tilde h_\\ell = a_{L-1} J_\\ell h_\\ell$ and the norm removes the
-   scalar.
-3. **The mean diagonal of $J_\\ell$ does move**, by $s$ below $k$ and by $1$ at or
-   above it. Measured by Hutchinson's estimator on central-difference
-   Jacobian-vector products in both parameterisations. Every diagnostic
-   homogeneous of nonzero degree in $J$ --- mean diagonal, distance to the
-   identity, fraction of diagonal entries above a threshold --- therefore reports
-   a coordinate choice.
-
-Run in **fp32**. In bf16 the same construction drifts by ${\\sim}3\\%$ over 64
-layers purely from accumulation, which is enough to blur an exact identity into a
-small residual and prove nothing.
-
+Run in **fp32**: in bf16 the construction drifts ${\sim}3\%$ over 64 layers from
+accumulation alone, enough to blur an exact identity into a small residual.
 """
 
 from __future__ import annotations
@@ -61,9 +40,9 @@ OUT = config.DATA_ROOT / "gauge"
 def step_gauge(n_layers: int, step_layer: int, scale: float) -> list[float]:
     """``a[l + 1] = a_l``, with ``a[0] = a_{-1}`` for the embedding.
 
-    A step rather than a smooth profile because the prediction is then legible:
-    the diagnostic must move by exactly ``scale`` below ``step_layer`` and by
-    exactly 1 at or above it, in the same run.
+    A step rather than a smooth profile so the prediction is legible: the diagnostic
+    must move by
+    exactly ``scale`` below ``step_layer`` and by exactly 1 at or above, in one run.
     """
     return [1.0] + [scale if layer >= step_layer else 1.0 for layer in range(n_layers)]
 
@@ -137,11 +116,9 @@ def mean_diagonal(model, prompt: str, layer: int, *, probes: int, epsilon: float
                   seed: int) -> float:
     """``mean_i J[i, i]`` by Hutchinson on central-difference JVPs.
 
-    ``E_v[v^T J v] / d`` is the mean diagonal for Rademacher ``v``, and ``J v`` is
-    a symmetric difference of the final stream against a perturbation of the
-    stream at ``layer``. Central rather than forward differences so the estimate
-    is second-order accurate and the same ``epsilon`` is usable in both
-    parameterisations, where the stream magnitudes differ.
+    Central rather than forward differences, so the estimate is second-order accurate
+    and one
+    ``epsilon`` works in both parameterisations, where the stream magnitudes differ.
     """
     input_ids = model.encode(prompt, max_length=512)
     final_layer = model.n_layers - 1

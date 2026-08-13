@@ -13,7 +13,10 @@ from innerj.experiments.sweep import at_distance, decay_profile, sweep
 from innerj.patch import Component
 from innerj.tasks.base import Condition
 
-CONTRAST = (Condition.FLEXIBLE, Condition.AUTOMATIC)
+#: Instances must be complete in the swept arm *and* in automatic, so that changing
+#: ``--arm`` never changes which instances are swept. Two arms swept over different
+#: instance sets are not comparable, which is the whole point of sweeping a second one.
+COMPLETE_IN = Condition.AUTOMATIC
 
 
 def main() -> None:
@@ -47,11 +50,21 @@ def main() -> None:
         "--distance", type=int, default=4, help="matched-distance slice to print"
     )
     parser.set_defaults(tag="sweep2d")
+    parser.add_argument(
+        "--arm",
+        default="flexible",
+        choices=["flexible", "supplied", "report", "control"],
+        help="arm both donor and target are drawn from. The default is the "
+        "demand-bearing arm. `control` needs the latent for nothing, so sweeping "
+        "it asks whether the window is specific to demand or is a property of "
+        "where the passage sits relative to the readout.",
+    )
     args = parser.parse_args()
 
-    grouped = common.instances(args, CONTRAST)
-    flexible = {i: g[Condition.FLEXIBLE] for i, g in grouped.items()}
-    pairs = mismatched_pairs(flexible, flexible, seed=args.seed)
+    arm = Condition(args.arm)
+    grouped = common.instances(args, (arm, COMPLETE_IN))
+    swept = {i: g[arm] for i, g in grouped.items()}
+    pairs = mismatched_pairs(swept, swept, seed=args.seed)
     console.detail(f"{len(pairs)} mismatched pairs")
 
     lo, hi = args.layers
@@ -70,7 +83,7 @@ def main() -> None:
         f"{len(components)} components over L{lo}-L{hi} step {args.step}"
     )
     positions, position_label = common.query_span(args)
-    cells = sweep(
+    cells, observations = sweep(
         model, lens, pairs, components, positions=positions, max_read_layer=hi + 12
     )
 
@@ -139,9 +152,16 @@ def main() -> None:
         ],
     )
 
+    # The results file is written under the historical stem rather than through
+    # `common.save`, because the paper's inventory, the figure module and the audit
+    # all name `sweep/<tag>_<model>.json`. The observations go beside it under the
+    # conventional `_observations` suffix, so the pair can be re-pooled and re-split
+    # without another GPU pass -- which the pooled cells alone cannot be.
+    name = common.stem(args, dataset=False)
+    common.write_lines("sweep", f"{name}_observations", observations)
     common.write(
         "sweep",
-        common.stem(args, dataset=False),
+        name,
         {"positions": position_label, "n_pairs": len(pairs),
          "cells": [c.to_dict() for c in cells]},
         args=args,

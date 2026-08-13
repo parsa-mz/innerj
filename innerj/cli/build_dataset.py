@@ -11,8 +11,9 @@ from pathlib import Path
 
 from transformers import AutoTokenizer
 
-from innerj import config
+from innerj import config, console
 from innerj.cli import common
+from innerj.model import model_slug
 from innerj.tasks.base import group_by_instance, write_jsonl
 
 DATA_ROOT = config.DATA_ROOT
@@ -93,7 +94,7 @@ def main() -> None:
     suffix = "unmatched" if args.unmatched_legend else "matched"
     if args.matched_length:
         suffix = f"{suffix}_len"
-    slug = args.model.split("/")[-1]
+    slug = model_slug(args.model)
     out = Path(args.out) if args.out else (
         DATA_ROOT / args.family
         / f"{slug}_{suffix}_n{args.n}_s{args.seed}{args.tag_extra}.jsonl"
@@ -107,13 +108,13 @@ def main() -> None:
     # reported 38 of 399 as complete, which reads as a broken generator.
     arms = {r.condition for r in records}
     complete = sum(1 for g in instances.values() if arms <= set(g))
-    print(f"wrote {n} records to {out}")
-    print(
+    console.detail(f"wrote {n} records to {out}")
+    console.detail(
         f"  instances: {len(instances)} ({complete} with all {len(arms)} conditions)"
     )
     for condition, count in sorted(counts.items()):
-        print(f"  {condition:10} {count}")
-    print(f"  languages: {len({r.latent_value for r in records})}")
+        console.detail(f"  {condition:10} {count}")
+    console.detail(f"  languages: {len({r.latent_value for r in records})}")
 
 
 if __name__ == "__main__":

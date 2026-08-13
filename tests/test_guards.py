@@ -463,6 +463,7 @@ def _dissoc(acc_hi, acc_lo, n_hi, n_lo, entry=0.05):
     return Dissociation(
         family="f", high="flexible", low="control",
         delta_entry=paired_bootstrap(z + entry, z, seed=0),
+        delta_entry_logrank=paired_bootstrap(z + entry, z, seed=0),
         delta_margin=paired_bootstrap(z, z + 1, seed=0),
         delta_entry_max=paired_bootstrap(z + entry, z, seed=0),
         delta_accuracy=paired_bootstrap(z + acc_hi, z + acc_lo, seed=0),
@@ -526,6 +527,191 @@ def test_every_observation_records_the_positions_it_patched():
         )
 
 
+def test_a_per_distractor_contrast_records_which_distractors():
+    """Trap 16, the half that ``n_other`` alone does not close.
+
+    The donor-minus-per-distractor contrast is unbiased only when a destructive
+    patch leaves the answer *uniform* on the candidate set. Destruction is
+    measurably non-uniform (`analysis.md` §36), so a residual bias remains. With the
+    distractor *count* alone that bias can be bounded in expectation over randomised
+    assignment but not per pair, because the pair's own candidate set cannot be
+    reconstructed -- which is exactly how the first attempt at the bound had to
+    approximate D by the observed symbol pool minus gold and donor.
+
+    Both observation types whose estimator divides by ``n_other`` must therefore
+    record the identities too. The gold and donor symbols are already recorded, so
+    these three fields reconstruct the full candidate set.
+    """
+    from dataclasses import fields
+
+    from innerj.experiments.counterfactual import CounterfactualObservation
+    from innerj.experiments.mediate import MediationObservation
+
+    for observation in (CounterfactualObservation, MediationObservation):
+        names = {f.name for f in fields(observation)}
+        assert "n_other" in names  # the estimator's denominator
+        assert "other_symbols" in names, (
+            f"{observation.__name__} records how many distractors there were but not "
+            f"which, so the destruction bias cannot be bounded per pair"
+        )
+
+
+def test_the_readout_position_does_not_follow_the_patch(monkeypatch):
+    """Trap 7, in the plumbing rather than the prompt design.
+
+    ``run_patched`` recorded residuals at the *patched* span, so the readout row moved
+    whenever the intervention moved. With a 12-token query span ``[0]`` of the recorded
+    rows is twelve tokens before the answer; with a passage span it is inside the
+    passage. The symptom that caught it: a ``passage:last12`` arm and a
+    ``both:last12`` arm returned byte-identical numbers in all eight cells, because
+    both spans begin at the same index and only one row was ever read.
+
+    So ``read_positions`` is independent of ``positions``, and it defaults to
+    ``positions`` to leave every existing caller's behaviour unchanged.
+    """
+    from innerj.patch import run_patched
+
+    seq_len, width = 40, 6
+    captured = {}
+
+    class Block(torch.nn.Module):
+        def forward(self, x):
+            return x
+
+    class Model:
+        n_layers = 2
+        layers = torch.nn.ModuleList([Block(), Block()])
+
+        def encode(self, prompt, max_length=512):
+            # Row i carries the value i, so a recorded row identifies its position.
+            captured["ids"] = torch.arange(seq_len).unsqueeze(0)
+            return captured["ids"]
+
+        def forward(self, input_ids):
+            h = input_ids[0].float().unsqueeze(-1).expand(-1, width).unsqueeze(0)
+            for layer in self.layers:
+                h = layer(h)
+            return h
+
+        def unembed(self, h):
+            return h
+
+    model = Model()
+    # A hooked forward needs the hooks to see the hidden states, so run the blocks on
+    # a tensor whose rows encode their own index.
+    def fake_forward(input_ids):
+        h = input_ids[0].float().unsqueeze(-1).expand(-1, width).unsqueeze(0).clone()
+        for layer in model.layers:
+            h = layer(h)
+        return h
+
+    monkeypatch.setattr(model, "forward", fake_forward, raising=False)
+
+    # Default: readout follows the patch, so the last recorded row is the last patched.
+    _, recorded = run_patched(
+        model, "prompt", {}, positions=list(range(-12, 0)), record_layers=[0]
+    )
+    assert recorded[0].shape[0] == 12
+    assert recorded[0][0, 0] == seq_len - 12  # first patched row, not the answer
+    assert recorded[0][-1, 0] == seq_len - 1
+
+    # Pinned: one row, the answer position, whatever the patch span was.
+    _, pinned = run_patched(
+        model, "prompt", {}, positions=list(range(5, 17)),
+        read_positions=[-1], record_layers=[0],
+    )
+    assert pinned[0].shape[0] == 1
+    assert pinned[0][-1, 0] == seq_len - 1
+
+    # The bug's signature, reproduced: two different spans that share a first index
+    # are indistinguishable to a readout indexed [0] of the recorded rows.
+    _, passage_like = run_patched(
+        model, "prompt", {}, positions=list(range(20, 32)), record_layers=[0]
+    )
+    _, both_like = run_patched(
+        model, "prompt", {},
+        positions=[*range(20, 32), *range(-12, 0)], record_layers=[0],
+    )
+    assert passage_like[0][0, 0] == both_like[0][0, 0]  # same row: the collapse
+    assert passage_like[0][-1, 0] != both_like[0][-1, 0]  # differ only at [-1]
+
+
+def test_specificity_pooling_keeps_the_position_modes_apart():
+    """The same collapse, in the experiment that measures repair.
+
+    ``specificity`` gained a position axis for the repair test, whose whole content
+    is the *difference* between a query-only arm and one that also patches the
+    passage. Pooled on the component alone the two arms average, which halves the
+    difference the experiment exists to measure and leaves a real effect looking like
+    a weak one.
+    """
+    from innerj.experiments.specificity import (
+        SpecificityObservation,
+        pool_specificity,
+    )
+
+    observations = [
+        SpecificityObservation(
+            component="resid.L33", positions=positions,
+            target_instance=f"i{n}", donor_instance=f"d{n}",
+            target_value="Spanish", donor_value="Polish",
+            target_entry_clean=0.5, target_entry_patched=0.5,
+            donor_entry_clean=0.5, donor_entry_patched=0.5 + survival,
+        )
+        for positions, survival in (("query:last12", 0.0), ("both:last12", 0.2))
+        for n in range(8)
+    ]
+    results = pool_specificity(observations)
+    assert [r.positions for r in results] == ["both:last12", "query:last12"]
+    assert results[0].delta_donor.point == pytest.approx(0.2)
+    # Pooled into one row this would read +0.1 in both arms: repair blocked nowhere
+    # and half-blocked everywhere.
+    assert results[1].delta_donor.point == pytest.approx(0.0)
+
+
+def test_the_combined_position_mode_refuses_to_patch_a_token_twice():
+    """``both`` writes two activations; overlapping spans would write only one.
+
+    The passage span and the query span are resolved independently, so on a prompt
+    whose instruction is shorter than the span they overlap. The last hook to run
+    wins, and the artifact still reports the span it did not apply -- silent, and it
+    looks like a weak effect rather than a bug. So it raises.
+    """
+    from innerj.positions import build
+
+    class Tokenizer:
+        """Whitespace tokenizer: one token per word, no special tokens."""
+
+        def encode(self, text: str, max_length: int = 512) -> torch.Tensor:
+            return torch.tensor([[hash(w) % 1000 for w in text.split()]])
+
+    model = Tokenizer()
+    context = " ".join(f"c{i}" for i in range(40))
+
+    def record(instruction: str):
+        return Record(
+            id="r", family="language", condition=Condition.FLEXIBLE,
+            semantic_instance_id="i", template_id="t", context=context,
+            instruction=instruction, latent_name="language",
+            latent_value="Spanish", latent_token_id=1, control_token_ids=[2],
+            gold_answer="A", candidate_answers=["A", "B"], candidate_token_ids=[3, 4],
+        )
+
+    both = build("both", 8)
+    # A long instruction leaves room: 8 passage positions then 8 query positions,
+    # in that order, and the query half stays negative so it resolves per record.
+    roomy = record(" ".join(f"q{i}" for i in range(12)))
+    resolved = both(model, roomy)
+    assert len(resolved) == 16
+    assert resolved[:8] == list(range(32, 40))
+    assert resolved[8:] == list(range(-8, 0))
+
+    # A 3-token instruction leaves only 3 tokens after the context, so the last 8
+    # prompt positions reach back into it.
+    with pytest.raises(ValueError, match="overlap"):
+        both(model, record("q0 q1 q2"))
+
+
 def test_pooling_keeps_the_position_modes_apart():
     """Recording the factor is not enough --- the pool must key on it.
 
@@ -567,7 +753,7 @@ def test_the_matched_length_arms_tokenise_to_one_length():
     if the arms have the same number of tokens after the passage. The default
     instructions are 13/12/14/12, which made the attention-route measurement
     uninterpretable: every head at every layer shifted between arms because the
-    window moved, not the model (`docs/analysis.md` §23.6).
+    window moved, not the model (`scratchpad/analysis.md` §23.6).
 
     Skipped rather than mocked when the tokenizer is not cached. A fake tokenizer
     would assert nothing here -- the property being pinned is a fact about Qwen's
@@ -839,6 +1025,7 @@ def test_the_2x2_separates_latent_demand_from_compositional_work():
             record_id=f"{instance}_{condition}", family="language",
             condition=condition, semantic_instance_id=instance,
             band_mean_r_z=r_z, band_r_z=r_z, band_mean_m_z=0.0, band_m_z=0.0,
+            band_mean_neg_log_rank=0.0,
             best_layer=39, n_layers_above_99=0, correct=True, fc_margin=1.0,
             n_candidates=4, open_vocab_top="x", query_position=-1, seq_len=64,
             per_layer={},
@@ -872,6 +1059,7 @@ def test_the_interaction_needs_all_four_arms():
         Trial(
             record_id=f"i0_{c}", family="language", condition=c,
             semantic_instance_id="i0", band_mean_r_z=0.9, band_r_z=0.9,
+            band_mean_neg_log_rank=0.0,
             band_mean_m_z=0.0, band_m_z=0.0, best_layer=39, n_layers_above_99=0,
             correct=True, fc_margin=1.0, n_candidates=4, open_vocab_top="x",
             query_position=-1, seq_len=64, per_layer={},
@@ -916,3 +1104,57 @@ def test_selectivity_does_not_mix_ablation_modes():
     assert zero_only["control_delta"] == pytest.approx(-0.50)
     # And the two modes must reach different verdicts, or the fixture proves nothing.
     assert mean_only["selectivity"] < zero_only["selectivity"]
+
+
+def test_ablate_pooling_keeps_the_position_modes_apart():
+    """Trap 16 for the ablation pooler, which was untested.
+
+    ``pool_specificity`` and ``pool_counterfactual`` are pinned above. ``ablate.pool``
+    and ``mediate.pool`` also key on ``positions`` and had no such guard, so nothing
+    stopped a future edit from dropping it from the key and averaging two arms.
+    """
+    from innerj.experiments.ablate import AblationObservation, pool
+
+    observations = [
+        AblationObservation(
+            component="resid.L39", positions=positions, mode="mean",
+            condition="flexible", instance=f"i{n}",
+            correct_clean=True, correct_ablated=not costly,
+            margin_clean=1.0, margin_ablated=0.0 if costly else 1.0,
+        )
+        for positions, costly in (("query:last12", True), ("passage:last12", False))
+        for n in range(20)
+    ]
+    results = pool(observations)
+
+    by_positions = {r.positions: r for r in results}
+    assert set(by_positions) == {"query:last12", "passage:last12"}
+    # The arms have opposite effects. Averaged, each would read about -0.5.
+    assert by_positions["query:last12"].delta_accuracy.point == -1.0
+    assert by_positions["passage:last12"].delta_accuracy.point == 0.0
+
+
+def test_mediate_pooling_keeps_the_position_modes_apart():
+    """Trap 16 for the mediation pooler. Same argument as the ablation one."""
+    from innerj.experiments.mediate import MediationObservation, pool
+
+    observations = [
+        MediationObservation(
+            component="resid.L39", positions=positions, mode="full",
+            target_instance=f"i{n}", donor_instance=f"d{n}",
+            donor_value="Polish", gold_symbol="V", donor_symbol="K",
+            answer="K" if transported else "V",
+            is_donor_symbol=transported, is_gold=not transported,
+            is_other=False, n_other=2,
+        )
+        for positions, transported in (
+            ("query:last12", True), ("passage:last12", False)
+        )
+        for n in range(20)
+    ]
+    results = pool(observations)
+
+    by_positions = {r.positions: r for r in results}
+    assert set(by_positions) == {"query:last12", "passage:last12"}
+    assert by_positions["query:last12"].delta_vs_other.point == 1.0
+    assert by_positions["passage:last12"].delta_vs_other.point == 0.0

@@ -1,36 +1,19 @@
 """Stage 2c: does the transported value change the *answer*?
 
-A rank shift in a lens readout is evidence about a representation. It is not
-evidence that the model uses it. The strongest available test turns the patch into
-a behavioural prediction with a specific wrong answer attached.
+Target and donor are both **flexible** records with independently randomised lookup
+tables.
+Patch from a donor holding language `D` into a target holding `T`: ``T -> table[T]``
+means
+the patch carried nothing, while ``T -> table[D]`` is the target's *own* table applied
+to
+the **donor's** language. ``table[D]`` never appears in the donor's prompt and `D` never
+appears in the target's context, so nothing but transported content produces it; generic
+damage produces distractors or noise.
 
-Both target and donor are **flexible** records, so each carries its own lookup
-table. Patch a component from a donor holding language `D` into a target holding
-language `T`, then ask which symbol the model emits:
-
-* ``T -> table[T]`` -- unaffected, the patch carried nothing;
-* ``T -> table[D]`` -- the target's *own* table applied to the **donor's**
-  language. The patch transported `D`, and the model then ran the operator the
-  target's prompt defined.
-
-That second outcome is the one that matters. `table[D]` is a symbol the donor's
-prompt never contained (the tables are independently randomised), and the donor's
-language never appears in the target's context, so nothing but transported content
-can produce it. Generic damage produces neither -- it produces the remaining
-distractor symbols or noise.
-
-This is the difference between "the workspace representation changed" and "the
-model read the changed representation and acted on it."
-
-**Both halves are recorded per trial.** An earlier version scored only the
-forced-choice argmax, which made "0 of 80 answer flips" the whole behavioural
-story --- and a thresholded outcome cannot distinguish "the patch moved nothing"
-from "the patch moved the donor's symbol substantially but not past the gold
-symbol". The continuous columns (``donor_logit_*``, ``donor_prob_*``,
-``donor_vs_other_margin_*``) settle that, and when a lens is supplied the donor
-concept's readout shift is recorded on **the same trial** as the behaviour, so the
-readout-versus-use dissociation becomes a within-trial fact rather than a
-comparison of two differently sized samples.
+**Both halves are recorded per trial**, because a thresholded argmax cannot distinguish
+"moved nothing" from "moved the donor's symbol but not past gold". With a lens supplied
+the
+donor's readout shift is recorded on **the same trial** as the behaviour.
 """
 
 from __future__ import annotations
@@ -43,22 +26,23 @@ from jlens import JacobianLens
 from jlens.hf import HFLensModel
 
 from innerj import console
-from innerj.analysis.readout import concept_scores, forced_choice
+from innerj.analysis.readout import band_scores, forced_choice
 from innerj.analysis.stats import Estimate, paired_bootstrap
 from innerj.patch import Component, capture, run_patched
-from innerj.positions import PositionFn, build, describe
+from innerj.positions import READ_AT, PositionFn, build, describe
 from innerj.tasks.base import Record
+
+#: The ``cf_where_*`` **passage** rows predate the pin and were scored at the passage
+#: end, so read them as uninformative rather than as nulls. Every other published number
+#: in this experiment is ``query`` mode and is unaffected.
 
 
 def _restricted(
     logits: torch.Tensor, candidate_ids: list[int]
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Logits and probabilities over the candidate set alone.
-
-    The task is forced choice, so the probability that matters is normalised over
-    the candidates rather than the full vocabulary --- on this checkpoint the
-    open-vocabulary top token is often ``'\\n\\n'``, which would dominate any
-    unrestricted probability and measure formatting instead of the answer.
+    r"""Logits and probabilities over the candidate set alone: the task is forced
+    choice,
+        and the open-vocabulary top token is often ``'\n\n'``.
     """
     scores = logits[candidate_ids].float()
     return scores, torch.softmax(scores, dim=-1)
@@ -125,6 +109,14 @@ class CounterfactualObservation:
     patched_is_other: bool
     clean_is_other: bool
     n_other: int
+    #: The distractor *identities*, not just how many. Eq. (distractor) is unbiased
+    #: only when destruction leaves the answer uniform on the candidate set, and
+    #: destruction is measurably non-uniform (`analysis.md` §36). With the count
+    #: alone the residual bias can be bounded in expectation over randomised
+    #: assignment but not per pair, because the pair's own distractor set cannot be
+    #: reconstructed -- trap 16. The full candidate set is this plus the gold and
+    #: donor symbols, so nothing else needs recording.
+    other_symbols: list[str]
     #: Continuous behaviour over the candidate set. A thresholded flip rate cannot
     #: separate "moved nothing" from "moved a lot but not past the gold symbol".
     donor_logit_clean: float
@@ -154,10 +146,9 @@ def buildable_pairs(
 ) -> list[tuple[Record, Record, str, str]]:
     """Pair targets with donors whose language maps to a *different* symbol.
 
-    Requires the donor's language to appear in the target's table -- otherwise
-    ``table[D]`` does not exist and the counterfactual has no predicted answer. It
-    also requires ``table[D] != table[T]``, or the prediction is indistinguishable
-    from no effect.
+    The donor's language must be in the target's table, or ``table[D]`` does not exist;
+    and
+    ``table[D] != table[T]``, or the prediction is indistinguishable from no effect.
     """
     instances = sorted(flexible)
     rng = np.random.default_rng(seed)
@@ -200,25 +191,18 @@ def counterfactual(
 ) -> list[CounterfactualObservation]:
     """Patch each component and record which symbol the model chooses.
 
-    ``groups`` are labelled component sets, each patched **together**. A group of one
-    is a single-component patch; larger groups test whether a pathway that no single
-    component carries is nonetheless carried by a small set of them.
+    ``groups`` are component sets patched **together**, so a larger group tests whether
+    a
+    pathway no single component carries is carried by a small set. ``positions`` is
+    resolved
+    **per record** and is an experimental axis: patching only the query region leaves
+    the
+    operator no downstream computation in which to consume a transported value.
 
-    ``positions`` is resolved **per record**, so donor and target use different
-    absolute indices for the same semantic location -- necessary because they are
-    different instances with different passage lengths. Defaults to the query
-    position alone.
-
-    The position choice is an experimental axis, not a detail. Patching only the
-    query region leaves the operator no downstream computation in which to consume a
-    transported value, and patching only there also misses the passage, where the
-    latent variable is constructed in the first place.
-
-    Supplying ``lens`` and ``read_layers`` additionally records the donor concept's
-    J-lens readout on the same trial, which is what makes the readout-versus-use
-    comparison a within-trial one. Both or neither; the lens-free path is the
-    default because the headline behavioural result is stronger for never having
-    touched the lens.
+    ``lens`` with ``read_layers`` also records the donor's readout on the same trial.
+    The
+    lens-free path is the default, the headline result being stronger for never touching
+    it.
     """
     if (lens is None) != (read_layers is None):
         raise ValueError(
@@ -250,6 +234,7 @@ def counterfactual(
         # is indexed `[-1]`, the final token, in both runs.
         clean_logits, clean_res = run_patched(
             model, target.prompt, {}, positions=target_positions,
+            read_positions=READ_AT,
             max_seq_len=max_seq_len, record_layers=read_layers,
         )
         clean_id, _ = forced_choice(clean_logits[-1], target.candidate_token_ids)
@@ -270,18 +255,8 @@ def counterfactual(
             """Mean (R_z, log-rank, M_z) of the donor concept over read_layers."""
             if lens is None or residuals is None:
                 return (None, None, None)
-            scores = [
-                concept_scores(
-                    model.unembed(lens.transport(residuals[layer], layer)).float()[-1],
-                    token,
-                    rivals,
-                )
-                for layer in read_layers
-            ]
-            return (
-                float(np.mean([s.r_z for s in scores])),
-                float(np.mean([s.neg_log_rank for s in scores])),
-                float(np.mean([s.m_z for s in scores])),
+            return band_scores(
+                model, lens, residuals, read_layers, token, rivals, row=-1
             )
 
         clean_read = readout(clean_res)
@@ -292,6 +267,7 @@ def counterfactual(
                 target.prompt,
                 {c: donor_acts[c] for c in group},
                 positions=target_positions,
+                read_positions=READ_AT,
                 max_seq_len=max_seq_len,
                 record_layers=read_layers,
             )
@@ -322,6 +298,7 @@ def counterfactual(
                     patched_is_other=patched_answer in others,
                     clean_is_other=clean_answer in others,
                     n_other=len(others),
+                    other_symbols=sorted(others),
                     donor_logit_clean=clean_behaviour.donor_logit,
                     donor_logit_patched=patched_behaviour.donor_logit,
                     gold_logit_clean=clean_behaviour.gold_logit,
@@ -378,17 +355,15 @@ class CounterfactualResult:
     def verdict(self) -> str:
         """The donor's symbol must beat the *unrelated distractors*, not zero.
 
-        Comparing against the clean baseline is not enough and produces confident
-        false positives. A patch that merely destroys the computation drives the
-        answer toward uniform over the candidate set, which lifts the donor-symbol
-        rate from ~0 to ~1/n purely as an artifact -- observed at passage positions,
-        where six components each read +0.20 to +0.23 against a 0.25 chance floor
-        while accuracy fell to 0.18-0.28.
-
-        Each target's table holds the gold symbol, the donor's symbol, and unrelated
-        distractors. Randomisation raises all non-gold symbols equally; transport
-        raises only the donor's. So the contrast against the matched per-distractor
-        rate is the test.
+                A patch that merely destroys the computation drives the answer toward
+                uniform,
+                lifting the donor rate from ~0 to ~1/n as an artifact -- observed at
+                passage
+                positions, where six components read +0.20 to +0.23 against a 0.25 floor
+                while
+                accuracy fell to 0.18-0.28. Randomisation raises all non-gold symbols
+                equally;
+                transport raises only the donor's.
         """
         if not self.delta_donor_vs_other.excludes_zero:
             if self.delta_donor_symbol.excludes_zero:

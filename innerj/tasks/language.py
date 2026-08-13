@@ -1,25 +1,15 @@
 """Language identity: the family that most directly extends the source paper.
 
-The latent variable ``z`` is the language of a passage. This family is first
-because it is the source paper's own experiment and because it is where the
-open-weight evidence for the lens surfacing latent content is strongest.
-
-Passages come from FLORES-200, which is *N-way parallel*: every sentence exists
-in every language, professionally translated. Two things follow, and both matter
-more than convenience.
-
-**The counterfactual is exact.** A Spanish passage and its German counterpart are
-the same sentences, so patching between them varies the latent variable and
-nothing else -- not content, not length, not register. Hand-authored passages
-cannot give this.
-
-**The automatic condition gets a real forced choice.** Scoring "did the model
-keep using ``z`` without exposing it" normally needs a judge. Here the
-continuation sentence also exists in every language, so the candidate set is
-``{first token of the true next sentence, in each candidate language}`` and the
-gold answer is the one matching the passage. Same measurement machinery as the
-other three conditions, no judge, and the distractors are matched by
-construction.
+``z`` is the language of a passage, taken from FLORES-200, which is *N-way parallel*.
+Two
+things follow. **The counterfactual is exact**: a Spanish passage and its German
+counterpart
+are the same sentences, so patching between them varies the latent variable and nothing
+else. **The automatic condition gets a real forced choice**: the continuation sentence
+also
+exists in every language, so the candidate set is its first token in each candidate
+language
+-- no judge, and distractors matched by construction.
 """
 
 from __future__ import annotations
@@ -31,7 +21,7 @@ from typing import Any
 
 import pandas as pd
 
-from innerj.analysis.readout import single_token_id
+from innerj.analysis.readout import single_token_id, single_token_subset
 from innerj.tasks.base import (
     Condition,
     Record,
@@ -141,11 +131,9 @@ def _snapshot_dir() -> str:
 def load_parallel(languages: list[str]) -> pd.DataFrame:
     """Load an N-way parallel frame indexed by the shared English sentence.
 
-    Every ``en-xx`` split of FLORES carries the identical English side, so an
-    inner join on it recovers full N-way alignment. That property is asserted
-    here rather than assumed: if a future mirror breaks it, the counterfactual
-    stops being content-matched and every Stage-1 number silently changes
-    meaning.
+    Asserted rather than assumed: if a future mirror breaks the alignment, the
+    counterfactual
+    stops being content-matched and every Stage-1 number silently changes meaning.
     """
     root = _snapshot_dir()
     frames: dict[str, pd.Series] = {}
@@ -172,32 +160,18 @@ def load_parallel(languages: list[str]) -> pd.DataFrame:
     return out
 
 
-def _single_token_subset(tokenizer: Any, words: list[str]) -> list[str]:
-    """Keep only the words that are exactly one token in continuation form."""
-    out = []
-    for word in words:
-        try:
-            single_token_id(tokenizer, word)
-        except ValueError:
-            continue
-        out.append(word)
-    return out
-
-
 def usable_symbols(tokenizer: Any) -> list[str]:
     """Operator output symbols that are single-token for this tokenizer."""
-    return _single_token_subset(tokenizer, OPERATOR_SYMBOLS)
+    return single_token_subset(tokenizer, OPERATOR_SYMBOLS)
 
 
 def usable_languages(tokenizer: Any, codes: list[str] | None = None) -> dict[str, str]:
-    """Subset of :data:`LANGUAGE_NAMES` whose names are single-token here.
-
-    Tokenizer-ambiguous labels are excluded, not worked around: the lens is
-    token-indexed, so a two-token label has no direction to measure.
+    """Languages whose names are single-token here; ambiguous labels are excluded, not
+        worked around, the lens being token-indexed.
     """
     codes = codes or list(LANGUAGE_NAMES)
     names = {c: LANGUAGE_NAMES[c] for c in codes if c in LANGUAGE_NAMES}
-    keep = set(_single_token_subset(tokenizer, list(names.values())))
+    keep = set(single_token_subset(tokenizer, list(names.values())))
     return {c: n for c, n in names.items() if n in keep}
 
 
@@ -206,43 +180,27 @@ class LanguageConfig:
     """Generation settings.
 
     Attributes:
-        n_instances: Number of semantic instances (each yields 4 records).
-        n_choices: Size of the candidate language set per instance.
-        sentences_per_passage: Passage length in FLORES sentences. Must be long
-            enough that the query position clears the lens's unfitted floor.
-        matched_legend: Show the operator's lookup table in *every* condition,
-            so the gold label is printed in all arms or none. Default ``True``.
-
-            With ``False`` the table appears only in the flexible arm, which is
-            the literal reading of the design -- and a confound: the label sits
-            in one prompt and not the other, so the contrast partly measures
-            whether the label was printed. That inflates the effect in exactly
-            the predicted direction.
-
-            ``True`` is conservative in the opposite way: a language table
-            present during the automatic condition may itself cue the model to
-            load the language, deflating the contrast. Running both quantifies
-            the artifact instead of guessing at it, so both are generated and the
-            matched arm is primary.
-        matched_length: Use instructions that tokenise to the **same length** in
-            every arm, with an identical trailing span. Default ``False``, which
-            keeps the instructions every published number was measured on.
-
-            The default instructions are 13/12/14/12 tokens (automatic / report /
-            flexible / control, counting the ``"\\n\\n"`` join), so the prompts
-            themselves differ in length. That is harmless for any measure read at
-            *the* query position, which is why it went unnoticed, and fatal for
-            any measure read over a *span* of query positions: the last twelve
-            tokens cover a different mix of tokens in each arm. It made the
-            attention-route measurement uninterpretable -- every head at every
-            layer shifted between arms, because the measurement window moved
-            rather than the model (``docs/analysis.md`` §23.6).
-
-            With ``True`` all four arms are 14 tokens and share a 9-token
-            byte-identical tail, so a span of the last 9 positions reads the same
-            tokens in every arm. Set ``--last-n 9`` for anything span-based on
-            these records.
-        seed: Controls language assignment, operator tables and distractors.
+        n_instances: Semantic instances; each yields 4 records.
+        n_choices: Candidate language set size per instance.
+        sentences_per_passage: Passage length, long enough to clear the lens's position
+            floor.
+        matched_legend: Show the operator table in *every* condition, so the gold label
+            is
+            printed in all arms or none. ``False`` is the literal reading of the design
+            and a
+            confound that inflates the effect in the predicted direction; ``True`` is
+            conservative the other way, since a table present during the automatic arm
+            may
+            itself cue the model. Both are generated; matched is primary.
+        matched_length: Instructions tokenising to the **same length** with an identical
+            trailing span. Default ``False``, keeping what every published number used
+            -- those
+            are 13/12/14/12 tokens, harmless at *the* query position and fatal over a
+            *span*,
+            which is what made the attention-route measurement uninterpretable. With
+            ``True``
+            all arms are 14 tokens sharing a 9-token tail, so use ``--last-n 9``.
+        seed: Language assignment, operator tables and distractors.
     """
 
     n_instances: int = 400
@@ -257,11 +215,9 @@ def generate(
     tokenizer: Any,
     config: LanguageConfig | None = None,
 ) -> list[Record]:
-    """Build matched automatic/report/flexible/control records.
-
-    All four conditions of one instance share the passage verbatim; only the
-    instruction changes. The language name never appears in the passage, which
-    :func:`check_label_absent` enforces.
+    """Matched automatic/report/flexible/control records sharing one passage verbatim;
+        only the instruction changes, and the language name never appears in the
+        passage.
     """
     config = config or LanguageConfig()
     rng = random.Random(config.seed)

@@ -1,22 +1,16 @@
-"""Shared figure style: one place for the palette, the typography and the
-primitives every panel uses.
+"""Shared figure style: palette, typography and the primitives every panel uses.
 
-The rules the deck follows, and why each one:
-
-* **White ground, no chrome.** No top or right spine, no box, no frame on the
-  legend, y-gridlines only. Anything that is not data or a label is removed.
-* **Direct labels beat legends.** A series named at the end of its own line costs
-  the reader no lookup, so :func:`endlabel` is the default and a legend is the
-  exception (used only where lines cross too much to label in place).
-* **Emphasis is a design variable.** The focal series is saturated and full
-  weight; controls are :data:`GREY` and thinner. A reader should see the argument
-  before reading the axis labels.
-* **Identity is never colour alone.** Every series also carries a marker and a
-  dash pattern, so the panels survive greyscale and colour-vision deficiency.
-* **The triple is validated, not eyeballed.** Blue / orange / magenta were
-  scored for OKLab separation under deuteranopia, protanopia and tritanopia:
-  worst-case separation 17.5 against a target of 8. Blue/purple (1.8) and
-  blue/teal (3.3) were rejected.
+White ground, no chrome. Direct labels beat legends, so :func:`endlabel` is the default.
+The
+focal series is saturated and full weight, controls :data:`GREY` and thinner. Identity
+is
+never colour alone -- every series carries a marker and a dash pattern, so the panels
+survive
+greyscale and colour-vision deficiency. The blue/orange/magenta triple was scored for
+OKLab
+separation under deuteranopia, protanopia and tritanopia: worst case 17.5 against a
+target of
+8, where blue/purple (1.8) and blue/teal (3.3) were rejected.
 """
 
 from __future__ import annotations
@@ -91,12 +85,12 @@ def use_style() -> None:
 
 
 def series(ax, x, point, lo=None, hi=None, *, color, marker="o", dashes=None,
-           label=None, alpha=0.15, width=None, zorder=3):
+           alpha=0.15, width=None, zorder=3):
     """One series with its interval. Identity is colour *and* marker *and* dashes."""
     if lo is not None:
         ax.fill_between(x, lo, hi, color=color, alpha=alpha, linewidth=0,
                         zorder=zorder - 1)
-    line, = ax.plot(x, point, color=color, marker=marker, label=label,
+    line, = ax.plot(x, point, color=color, marker=marker,
                     zorder=zorder, linewidth=width or STYLE["lines.linewidth"])
     if dashes:
         line.set_dashes(dashes)
@@ -111,11 +105,8 @@ def endlabel(ax, x, y, text, color, *, dx=0.9, dy=0.0, va="center", ha="left",
                 annotation_clip=False)
 
 
-def zero_line(ax, y=0.0, label=None):
+def zero_line(ax, y=0.0):
     ax.axhline(y, color=GREY, linewidth=0.6, linestyle=(0, (3.5, 3)), zorder=1)
-    if label:
-        ax.annotate(label, xy=(0.005, y), xycoords=("axes fraction", "data"),
-                    color=GREY, fontsize=6.4, va="bottom")
 
 
 def window(ax, lo, hi, label=None, color=RESID):
@@ -138,12 +129,8 @@ def panel(ax, title=None, xlabel=None, ylabel=None):
 
 
 def save(fig, name: str) -> None:
-    """PNG only, at 600 dpi.
-
-    These are vector plots and a PDF export would be strictly better for print, but the
-    deck ships one image format so that nothing in ``paper/`` is a raster wrapped in a
-    PDF container. 600 dpi at the 6.5in text width is ~3900px, well above the 300 dpi
-    print threshold. Add ``fig.savefig(OUT / f"{name}.pdf")`` here to get vector back.
+    """PNG only, at 600 dpi, so nothing in ``paper/`` is a raster wrapped in a PDF
+        container. Add a ``.pdf`` savefig here to get vector back.
     """
     OUT.mkdir(parents=True, exist_ok=True)
     fig.savefig(OUT / f"{name}.png")

@@ -220,30 +220,22 @@ __marimo__/
 # Vendored reference implementation: cloned, not authored here.
 jacobian-lens/
 
-# LaTeX build products. main.pdf and main.bbl are kept: the PDF is the artifact and
-# the .bbl lets the paper build without a local BibTeX run.
-paper/build/
-paper/*.aux
-paper/*.blg
-paper/*.log
-paper/*.out
-paper/*.fdb_latexmk
-paper/*.fls
-
 # Local environment
 .env
 
-# Run artifacts
-data/
+/data/
 logs/
 
-# Kept local by choice, not by accident: the manuscript, the write-up substrate
-# (docs/analysis.md is the number-of-record, docs/progress.md the dated design log),
-# scratch review output, and the working notes.
 paper/
-docs/
-workflows/
+scratchpad/
+/workflows/
 CLAUDE.md
 
 # Default figure output. Point INNERJ_FIGURE_DIR at the paper to rebuild in place.
-figures/
+/figures/
+
+# Internal notes, kept out of the tree.
+/temp_*.txt
+/pubtool*
+
+node_modules/

@@ -1,16 +1,15 @@
 """Paired statistics, clustered at the semantic instance.
 
-Two rules, both learned expensively.
+**Resample the cluster, not the observation.** An instance's conditions share a passage
+and
+nearby layers share almost everything, so resampling records as independent gives an
+interval
+several times too narrow.
 
-**Resample the cluster, not the observation.** The four conditions of an instance
-share a passage, and readouts at nearby layers of one trial share almost
-everything. Resampling records as though independent gives an interval several
-times too narrow. Everything here resamples semantic instances.
-
-**Report an effect size with an interval, never a bare p-value, and never a mean
-of ratios when a denominator can approach zero.** A ratio whose denominator
-nearly vanishes produces a spectacular effect out of nothing; the absolute gap
-travels beside every ratio for that reason.
+**Never a bare p-value, and never a mean of ratios when a denominator can approach
+zero** --
+a vanishing denominator manufactures an effect, so an absolute gap travels beside every
+ratio.
 """
 
 from __future__ import annotations
@@ -23,9 +22,8 @@ import numpy as np
 
 @dataclass(frozen=True)
 class Estimate:
-    """A point estimate with a bootstrap interval.
-
-    ``excludes_zero`` is the only significance claim this codebase makes.
+    """A point estimate with a bootstrap interval; ``excludes_zero`` is the only
+        significance claim this codebase makes.
     """
 
     point: float
@@ -41,28 +39,24 @@ class Estimate:
     def largest_not_excluded(self) -> float:
         """The biggest effect magnitude this interval is still compatible with.
 
-        The number that makes an absence claim falsifiable. A wide interval around
-        zero does **not** show there is no effect; it shows the data cannot tell an
-        effect below this magnitude from none. Quoting "nothing transports here"
-        from ``not excludes_zero`` is the error this property exists to prevent:
-        at L15 the interval is ``[-0.0074, +0.0399]``, so it admits an effect
-        *larger* than the ``+0.0135`` confirmed at the transport peak.
-
-        Say "we can exclude effects larger than ``x``", never "there is nothing".
+                What makes an absence claim falsifiable. At L15 the interval is
+                ``[-0.0074, +0.0399]``, admitting an effect *larger* than the
+                ``+0.0135`` confirmed
+                at the peak. Say "we can exclude effects larger than x", never "there is
+                nothing".
         """
         return max(abs(self.lo), abs(self.hi))
 
     def equivalent_to_zero(self, bound: float) -> bool:
         """Is the whole interval inside ``[-bound, +bound]``?
 
-        A ROPE / two-one-sided-tests style equivalence claim: absence is asserted
-        only when every effect the data admits is smaller than a *prespecified*
-        smallest meaningful effect. Prespecify ``bound`` before looking, and record
-        it --- choosing it afterwards from the interval that came back is the same
-        error as picking a summary statistic after seeing the ranking.
-
-        Using the 95% interval here makes this conservative relative to the
-        conventional 90%-interval TOST at alpha=0.05.
+                A ROPE/TOST-style claim: absence is asserted only when every admitted
+                effect is
+                smaller than a *prespecified* smallest meaningful effect. Choosing
+                ``bound`` after
+                seeing the interval is the same error as picking a statistic after
+                seeing the
+                ranking.
         """
         if bound <= 0:
             raise ValueError(
@@ -83,11 +77,8 @@ def paired_bootstrap(
     alpha: float = 0.05,
     seed: int = 0,
 ) -> Estimate:
-    """Mean of ``a - b`` with a percentile interval over paired resamples.
-
-    ``a`` and ``b`` are aligned per instance, one observation each. Pairs are the
-    resampling unit, which is what makes the interval honest for a within-
-    instance contrast.
+    """Mean of ``a - b`` over paired resamples, pairs being the resampling unit --
+        what makes the interval honest for a within-instance contrast.
     """
     a = np.asarray(a, dtype=float)
     b = np.asarray(b, dtype=float)
@@ -112,10 +103,8 @@ def cluster_bootstrap(
     alpha: float = 0.05,
     seed: int = 0,
 ) -> Estimate:
-    """Mean of ``values`` with clusters as the resampling unit.
-
-    Use when observations are nested (several layers or positions per instance)
-    and there is no natural pairing to difference away.
+    """Mean of ``values`` with clusters as the resampling unit, for nested
+        observations with no natural pairing to difference away.
     """
     values = np.asarray(values, dtype=float)
     clusters = np.asarray(clusters)
@@ -139,12 +128,9 @@ def cluster_bootstrap(
 def ratio_with_gap(
     numerator: float, denominator: float, *, min_denominator: float = 1e-3
 ) -> tuple[float, float]:
-    """A ratio and its absolute gap, refusing to divide by near-zero.
-
-    Returns ``(nan, numerator)`` when the denominator is too small to support a
-    ratio. A vanishing denominator has already produced one retracted "effect is
-    largest mid-network" claim from a 310x ratio; the absolute gap is the number
-    that survived.
+    """A ratio and its absolute gap, returning ``(nan, numerator)`` when the
+        denominator is too small -- one already produced a retracted claim from a 310x
+        ratio.
     """
     if abs(denominator) < min_denominator:
         return math.nan, numerator
@@ -152,10 +138,8 @@ def ratio_with_gap(
 
 
 def benjamini_hochberg(pvalues: np.ndarray, alpha: float = 0.05) -> np.ndarray:
-    """Boolean mask of discoveries at FDR ``alpha``.
-
-    Component screening tests hundreds of candidates; without correction the
-    top of the ranking is mostly noise.
+    """Boolean mask of discoveries at FDR ``alpha``; without it the top of a
+        hundreds-wide ranking is mostly noise.
     """
     p = np.asarray(pvalues, dtype=float)
     n = p.size

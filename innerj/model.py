@@ -1,16 +1,12 @@
 """Model and lens loading, with the guards the reference implementation lacks.
 
-We depend on the authors' own ``jlens`` package for the lens algebra (loading,
-``J_l @ h`` transport, unembedding) so our numbers are parity-correct by
-construction rather than by test. This module adds what ``jlens`` does not do:
-
-* a finiteness check on load — the reference ``save()`` defaults to fp16 and
-  published Gemma-4 artifacts contain entries at fp16's minimum subnormal, so a
-  silently non-finite ``J`` is a real failure mode, not a hypothetical one;
-* the workspace layer band, mapped from the source paper's 0-100 reindex onto a
-  checkpoint's actual depth;
-* the position floor. ``fit()`` skips the first 16 positions but ``apply()``
-  reads them out anyway, out of distribution and unstable.
+The lens algebra comes from the authors' ``jlens``, so our numbers are parity-correct by
+construction. This module adds a finiteness check on load -- the reference ``save()``
+defaults to fp16 and published Gemma-4 artifacts contain fp16 subnormals -- the
+workspace
+band mapped onto actual depth, and the position floor, since ``fit()`` skips the first
+16
+positions but ``apply()`` reads them anyway.
 """
 
 from __future__ import annotations
@@ -32,15 +28,13 @@ BAND_END_FRAC = 0.92
 
 
 def band(n_layers: int) -> list[int]:
-    """Workspace layer band for a checkpoint of ``n_layers``, inclusive of both
-    ends.
+    """Workspace layer band for ``n_layers``, inclusive.
 
-    Reproduces the depth-verified band for every model in the prior survey:
-    24 layers -> 9-22, 32 -> 12-29, 48 -> 18-44, 60 -> 23-55, 64 -> 24-59.
-
-    The upper end is clamped to the last block: at the shallowest depths the
-    fraction rounds past the final layer, and a readout there would index off
-    the end of the model.
+    Reproduces the depth-verified band for every model in the prior survey: 24 layers ->
+    9-22,
+    32 -> 12-29, 48 -> 18-44, 60 -> 23-55, 64 -> 24-59. Clamped to the last block, since
+    at
+    shallow depths the fraction rounds past it.
     """
     if n_layers < 2:
         raise ValueError(f"n_layers={n_layers} is too shallow to have a band")
@@ -49,22 +43,23 @@ def band(n_layers: int) -> list[int]:
     return list(range(lo, hi + 1))
 
 
+def model_slug(name: str) -> str:
+    """``"Qwen/Qwen3.6-27B"`` -> ``"Qwen3.6-27B"``; artifact stems build on it."""
+    return name.split("/")[-1]
+
+
 @dataclass(frozen=True)
 class Target:
-    """A (checkpoint, lens) pair, resolved and provenance-stamped.
-
-    ``lens_path`` and ``revision`` go into every artifact we write. The source
-    paper's causal results are on closed models, and open-weight lens quality
-    varies by family, so a number without its exact lens is not interpretable.
+    """A (checkpoint, lens) pair. Lens quality varies by family, so a number without its
+        exact lens is not interpretable.
     """
 
     model_name: str
     lens_path: str
-    revision: str | None = None
 
     @property
     def slug(self) -> str:
-        return self.model_name.split("/")[-1]
+        return model_slug(self.model_name)
 
 
 #: Primary target. Qwen3.6-27B has no base variant, so it is already
@@ -82,19 +77,14 @@ QWEN27B = Target(
 
 
 def load_lens(
-    path: str, *, min_layers: int = 1, device: str | None = None
+    path: str, *, device: str | None = None
 ) -> JacobianLens:
     """Load a fitted lens, refusing anything non-finite.
 
-    ``path`` is either a local file or ``"repo_id::filename"`` for a Hub
-    artifact. Jacobians are promoted to fp32 regardless of storage dtype.
-
-    ``device`` moves the Jacobians once at load. The reference ``transport()``
-    does ``J.to(residual.device)`` on **every call**, so a lens left on the host
-    re-copies ~105 MB per layer per readout, which dominates every sweep in this
-    package: a Stage-1 record costs 955 ms with the lens on the host against
-    376 ms with it resident. The cost is ~6.6 GB of card, which fits alongside a
-    27B checkpoint on an 80 GB device. Leave it ``None`` on a smaller card.
+    ``path`` is a local file or ``"repo_id::filename"``; Jacobians are promoted to fp32.
+    ``device`` moves them once at load, because the reference ``transport()`` does
+    ``J.to(...)``
+    on **every call** -- 955 ms against 376 ms per Stage-1 record. Costs ~6.6 GB.
     """
     if "::" in path:
         repo_id, filename = path.split("::", 1)
@@ -112,10 +102,9 @@ def load_lens(
                 f"saved in fp16 with entries above 65504 overflows to inf, and "
                 f"every product downstream becomes NaN."
             )
-    if len(lens.source_layers) < min_layers:
+    if not lens.source_layers:
         raise ValueError(
-            f"{path}: only {len(lens.source_layers)} fitted layers, "
-            f"need >= {min_layers}"
+            f"{path} has no fitted source layers; a readout from it is meaningless"
         )
     if device is not None:
         lens.jacobians = {
@@ -133,24 +122,29 @@ def load_model(
 ) -> HFLensModel:
     """Load a checkpoint and wrap it for lens readout.
 
-    bf16 weights with fp32 readout arithmetic: verified on real weights at
-    cosine 0.999967-1.000000 against an fp32 forward.
+    bf16 weights, fp32 readout arithmetic, verified at cosine 0.999967-1.000000 against
+    an fp32
+    forward. ``device="auto"`` shards across every visible GPU, needed because the gauge
+    check
+    must run in fp32 (trap 14) and a 31B checkpoint is then ~124 GB.
     """
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, revision=revision)
+    placement = (
+        {"device_map": "auto"} if device == "auto" else {}
+    )
     hf_model = AutoModelForCausalLM.from_pretrained(
-        model_name, dtype=dtype, revision=revision
-    ).to(device)
+        model_name, dtype=dtype, revision=revision, **placement
+    )
+    if device != "auto":
+        hf_model = hf_model.to(device)
     return from_hf(hf_model, tokenizer)
 
 
 def check_positions(positions: list[int], seq_len: int) -> None:
-    """Raise if any position is outside the lens's fitted range.
-
-    Negative indices are resolved against ``seq_len`` first, so a caller using
-    ``-1`` on a short prompt gets caught rather than silently reading an
-    unfitted position.
+    """Raise if any position is outside the lens's fitted range; negatives resolve
+        against ``seq_len`` first, so ``-1`` on a short prompt is caught.
     """
     resolved = [p if p >= 0 else seq_len + p for p in positions]
     if any(not 0 <= p < seq_len for p in resolved):

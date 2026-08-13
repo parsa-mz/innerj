@@ -133,4 +133,4 @@ Most guards here exist because their absence produced a confident wrong answer. 
 
 Every effect size carries a bootstrap interval clustered on the semantic instance, since the arms share a passage; `excludes_zero` is the only significance claim made anywhere.
 
-MIT licensed — see [LICENSE](LICENSE). The vendored `jacobian-lens/` reference implementation is cloned, not authored here, and carries its own terms.
+The code is MIT licensed — see [LICENSE](LICENSE). **The released JGateBench records are CC BY-SA 4.0, not MIT**, because every prompt quotes a FLORES-200 passage verbatim and FLORES-200 is CC BY-SA 4.0; share-alike propagates to a derived dataset. See [DATA_LICENSE.md](DATA_LICENSE.md) for the attribution and what the split covers. The vendored `jacobian-lens/` reference implementation is cloned, not authored here, and carries its own terms.

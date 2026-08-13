@@ -1,24 +1,17 @@
 """The availability leg of Stage 1: is ``z`` linearly decodable regardless of demand?
 
-Stage 1's entry contrast shows the concept is *more* accessible in J-space under
-flexible demand. On its own that is compatible with a dull reading: maybe the
-model only computes ``z`` when the task asks for it, and workspace entry is just
-"the model knows ``z``" wearing a lens.
+If a linear probe on the residual stream decodes ``z`` at the same accuracy in *every*
+condition -- including the control arm, which needs ``z`` for nothing -- while ``R_z``
+moves
+a lot, then the information is equally present and only its broadcast differs. That
+rules
+out the dull reading, where workspace entry is just "the model knows ``z``" wearing a
+lens.
 
-The probe rules that out. If a linear probe on the full residual stream decodes
-``z`` at the same accuracy in *every* condition -- including the control arm,
-which needs ``z`` for nothing -- while ``R_z`` moves by a large margin, then the
-information is equally present throughout and only its *broadcast* is gated. That
-is the dissociation, and it is what makes a write mechanism the thing to look for.
-
-Two design points, both load-bearing:
-
-* **Held-out instances, never held-out positions.** Records from one semantic
-  instance share a passage, so a random record-level split leaks the passage
-  across the boundary and the probe scores its own training data.
-* **A probe trained in one condition is tested in the others.** If the same linear
-  direction reads ``z`` across arms, availability is genuinely shared rather than
-  four separately-learned encodings.
+Two load-bearing points: **held-out instances, never held-out positions**, since records
+from one instance share a passage; and **a probe trained in one condition is tested in
+the
+others**, one shared direction being a stronger claim than four encodings.
 """
 
 from __future__ import annotations
@@ -42,12 +35,7 @@ def cache_residuals(
     *,
     max_seq_len: int = 512,
 ) -> np.ndarray:
-    """Residuals at each record's query position: ``[n_records, n_layers, d_model]``.
-
-    Stored fp16 to keep a full family in memory; the probe standardises before
-    fitting, so the precision loss is immaterial next to the between-class
-    distances it has to resolve.
-    """
+    """Residuals at each record's query position, fp16 to keep a family in memory."""
     out = np.empty((len(records), len(layers), model.d_model), dtype=np.float16)
     for i, record in enumerate(records, 1):
         input_ids = model.encode(record.prompt, max_length=max_seq_len)
@@ -75,10 +63,8 @@ def _fit_logistic(
     weight_decay: float = 1e-2,
     seed: int = 0,
 ) -> float:
-    """Multinomial logistic regression; returns held-out accuracy.
-
-    Features are standardised on the *training* split only. Standardising on the
-    pooled data would leak the test distribution into the fit.
+    """Multinomial logistic regression. Standardised on the *training* split only;
+        pooling would leak the test distribution into the fit.
     """
     torch.manual_seed(seed)
     mean = x_train.mean(0, keepdim=True)
@@ -121,19 +107,12 @@ class ProbeResult:
     #: empirical floor, not a result -- see :func:`summarise`.
     shuffled: bool = False
 
-    @property
-    def above_chance(self) -> float:
-        return self.accuracy - self.chance
-
 
 def instance_split(
     records: list[Record], *, train_frac: float = 0.6, seed: int = 0
 ) -> tuple[set[str], set[str]]:
-    """Split semantic instances, not records.
-
-    Conditions of one instance share a passage verbatim, so splitting records
-    would put the same passage on both sides and the probe would score memorised
-    text.
+    """Split semantic instances, not records: one instance's conditions share a passage
+        verbatim, so a record split would have the probe scoring memorised text.
     """
     instances = sorted({r.semantic_instance_id for r in records})
     rng = np.random.default_rng(seed)
@@ -161,26 +140,19 @@ def probe_grid(
 ) -> list[ProbeResult]:
     """Train a probe per (layer, condition) and evaluate it in every condition.
 
-    The diagonal answers "is ``z`` decodable in this arm at all". The off-diagonal
-    answers the stronger question: does *one* linear direction read ``z``
-    regardless of what the task asks for.
+    ``center_per_condition`` subtracts each condition's own mean first, since otherwise
+    a
+    cross-arm score conflates a shared ``z``-direction with the arms sitting in
+    different
+    regions of activation space. It is estimated on **training instances only**;
+    estimating it
+    over all records is leakage worth 0.014 of transfer accuracy, in our favour.
 
-    ``center_per_condition`` subtracts each condition's own mean residual before
-    fitting. Without it, a cross-arm score conflates two different things: whether
-    the ``z``-direction is shared, and whether the arms simply sit in different
-    regions of activation space. The prompts differ in format, so they do sit
-    apart, and an uncentred transfer number understates sharing. Report both --
-    but the centring is estimated on the **training instances only**. Estimating it
-    over all records lets the test arm's own mean inform the transform applied to
-    the test arm, which is leakage; it is worth 0.014 of transfer accuracy here, in
-    our favour, so the honest version is also the better one.
-
-    ``shuffle_labels`` permutes ``z`` across semantic instances, keeping an
-    instance's four arms consistent. Those rows are the empirical floor for
-    whatever statistic is reported downstream. This matters more than it sounds:
-    the headline number is a *maximum over twelve layers*, and a maximum over
-    twelve noisy draws does not sit at 1/n_classes. Measured here, the nominal
-    floor is 0.05 and the best-of-twelve floor is 0.093.
+    ``shuffle_labels`` permutes ``z`` across instances to give the empirical floor,
+    which
+    matters because the headline is a *maximum over twelve layers*: the nominal 0.05
+    floor is
+    really 0.093.
     """
     if residuals.shape[0] != len(records):
         raise ValueError(
@@ -315,22 +287,13 @@ def probe_grid(
 def summarise(results: list[ProbeResult]) -> dict:
     """Per-arm decoding, cross-arm transfer, and the floor the headline needs.
 
-    The claim needs the diagonal to be uniformly high. A large drop off the
-    diagonal would mean each arm encodes ``z`` its own way, which is a different
-    and weaker statement than shared availability.
-
-    Three things here exist because the obvious summary is misleading.
-
-    **``joint``** is the headline: one weight matrix over all arms, so it carries
-    the shared-direction claim without any per-arm quantity. It is reported as a
-    mean and standard deviation over seeds rather than a single number.
-
-    **``shuffled_floor``** is the reference point for ``*_best``. Those are maxima
-    over the layer axis, and a maximum over twelve noisy draws does not sit at
-    ``chance``: on this data ``chance`` is 0.05 and the best-of-twelve floor from
-    permuted labels is 0.093. Quoting a multiple of ``chance`` for a best-of-N
-    statistic overstates it by about 1.9x. Report ``*_best`` against this, or
-    report ``*_mean``, which needs no correction.
+    ``joint`` is the headline: one weight matrix over all arms, carrying the
+    shared-direction
+    claim without any per-arm quantity. ``shuffled_floor`` is the reference for
+    ``*_best``,
+    which are maxima over layers -- quoting a multiple of ``chance`` for those
+    overstates by
+    ~1.9x.
     """
     real = [r for r in results if not r.shuffled]
     shuffled = [r for r in results if r.shuffled]
@@ -342,10 +305,9 @@ def summarise(results: list[ProbeResult]) -> dict:
         return out
 
     def _per_seed_max(rows, key) -> dict[str, list[float]]:
-        """Max over layers within a seed, then collect across seeds.
-
-        Taking the max over the pooled (layer, seed) cells would be a maximum over
-        five times as many draws and would sit higher still.
+        """Max over layers within a seed, then across seeds; pooling the (layer, seed)
+        cells
+                would max over five times as many draws.
         """
         grouped: dict[tuple[str, int], list[float]] = {}
         for r in rows:

@@ -1,36 +1,23 @@
 """Publication figures, built from the artifacts under the data root.
 
-Every number plotted here is read from a JSON/JSONL artifact on disk; nothing is
-transcribed by hand. If a figure and ``docs/analysis.md`` disagree, the artifact
-wins and the doc is wrong.
+Every number plotted is read from a JSON/JSONL artifact; nothing is transcribed. If a
+figure and ``scratchpad/analysis.md`` disagree, the artifact wins. The deck:
+``overview``
+(schematic, the only one not from data), ``entry``, ``gather``, ``window``,
+``mechanism``,
+``across`` (fractional depth, since absolute layer indices are not comparable) and
+``example``.
 
-The deck, and the argument each figure carries:
-
-1. ``overview`` -- the two mechanisms the paper distinguishes. A schematic, the only
-   figure not drawn from data. The paper ships the vector-styled render in
-   ``paper/images/overview.png`` instead; this function is kept as the reproducible
-   fallback and as the specification the render was made from.
-2. ``entry``    -- availability is not entry: the per-layer profile, the
-   effect-against-its-confound plane, and the probe.
-3. ``gather``   -- attention carries the transport and MLPs never do, in two task
-   families, with the single-head case study and its non-replication.
-4. ``window``   -- the behavioural window with both edges measured, and what
-   happens at each edge.
-5. ``mechanism`` -- selective necessity, and mediation through one derived
-   J-direction against a matched random one.
-6. ``example``   -- one instance, all four arms, what the readout literally
-   contains. Appendix: it makes ``R_z`` concrete and shows why its absolute level
-   must not be read as representation strength.
-
-Form follows the data: every panel with an ordered layer axis is a line with a
-bootstrap band and a zero reference, never bars.
+Every panel with an ordered layer axis is a line with a bootstrap band and a zero
+reference, never bars. Where a donor pairing is a free parameter the panel draws every
+pairing, because one of them is not a result.
 """
 
 from __future__ import annotations
 
 import json
-import textwrap
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -39,6 +26,7 @@ from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
 from innerj import config
 from innerj.analysis.stats import paired_bootstrap
+from innerj.cli.common import artifact
 from innerj.figures.style import (
     ATTN,
     DASH_DOT,
@@ -57,7 +45,6 @@ from innerj.figures.style import (
     window,
     zero_line,
 )
-from innerj.tasks.base import Condition, read_jsonl
 
 DATA = config.DATA_ROOT
 
@@ -92,12 +79,7 @@ def _arrow(ax, start, end, *, color=INK, lw=0.9, style="-|>", dashes=None, z=4):
 
 
 def fig_overview() -> None:
-    """The two mechanisms, so the title's contrast is visible before §1.
-
-    Depth runs upward and the query position is the right-hand column in both
-    panels, so the only difference a reader has to absorb is where the variable
-    comes from. All prose sits in the right margin: nothing overlaps the diagram.
-    """
+    """The two mechanisms, so the title's contrast is visible before §1."""
     fig, axes = plt.subplots(1, 2, figsize=(6.5, 1.72))
     for ax, title in zip(
         axes,
@@ -162,12 +144,12 @@ def fig_overview() -> None:
 def fig_entry() -> None:
     """Three views of one dissociation: profile, effect-vs-confound, availability."""
     summary = json.load(
-        (DATA / "stage1"
-         / "s1v2_Qwen3.6-27B_Qwen3.6-27B_matched_n400_s0_summary.json").open()
+        artifact(
+            "stage1", "s1v2_Qwen3.6-27B_Qwen3.6-27B_matched_n400_s0_summary"
+        ).open()
     )
     probe = json.load(
-        (DATA / "probe"
-         / "probe2_Qwen3.6-27B_Qwen3.6-27B_matched_n400_s0.json").open()
+        artifact("probe", "probe2_Qwen3.6-27B_Qwen3.6-27B_matched_n400_s0").open()
     )["raw"]
 
     fig, axes = plt.subplots(
@@ -275,13 +257,9 @@ def _matched_distance(
 ) -> dict:
     """Mean over readout distances ``lo``-``hi``, per (patch layer, component).
 
-    Averaging over a fixed distance window is what makes patch depths comparable:
-    a fixed *late* readout grades survival instead of installation.
-
-    Several paths merge, because a sweep too long for one run is sharded by patch
-    layer. ``field`` selects the metric: ``delta_donor`` is the percentile rank,
-    ``delta_donor_logrank`` the non-saturating companion. Artifacts written before
-    the second metric existed carry only the first, so asking for a field they lack
+    A fixed distance window is what makes patch depths comparable; a fixed *late*
+    readout
+    grades survival instead of installation. Asking for a metric an older artifact lacks
     raises rather than silently plotting the wrong one.
     """
     grouped = defaultdict(list)
@@ -304,11 +282,8 @@ def _matched_distance(
 
 
 def _branch_panel(ax, table, *, label_at, annotate=None):
-    """resid / attn / mlp against patch layer, at matched distance.
-
-    ``label_at`` maps a component kind to ``(layer, dy)``: where along its own
-    line to name the series, and how far to lift the text off it.
-    """
+    """resid / attn / mlp against patch layer; ``label_at`` says where to name each
+    series."""
     for kind, color, marker, dashes, name in [
         ("resid", RESID, "o", None, "residual stream"),
         ("attn", ATTN, "s", DASH_LONG, "attention"),
@@ -338,57 +313,45 @@ def _branch_panel(ax, table, *, label_at, annotate=None):
 
 
 def fig_gather() -> None:
-    """Attention transports and MLPs never do -- in both families.
+    """Attention transports and MLPs do not -- in both families.
 
-    The third panel is the honest part: the single head that accounts for the
-    whole stream effect on one family does nothing on the other, so the general
-    claim is about the branch and the window, not the site.
+    The second family spreads the gather: on language the attention effect sits at L39
+    alone,
+    here L39 and L48 are comparable and L48 is linear-attention, so no head
+    decomposition is
+    possible there.
     """
-    # Panel (a) is the n=120 sweep under the non-saturating readout, sharded by
-    # patch layer. R_z saturates above 0.999 through most of the window, so a
-    # profile drawn from it compresses the peak the panel exists to show.
-    language = _matched_distance(
-        DATA / "sweep" / "n120_early_Qwen3.6-27B.json",
-        DATA / "sweep" / "n120_window_Qwen3.6-27B.json",
-        field="delta_donor_logrank",
+    tracking = _matched_distance(
+        artifact("sweep", "F_track_gather_n140_Qwen3.6-27B")
     )
-    tracking = _matched_distance(DATA / "sweep" / "F_track_gather_Qwen3.6-27B.json")
-    heads = _matched_distance(DATA / "sweep" / "A_heads_n60_Qwen3.6-27B.json")
+    heads = _matched_distance(artifact("sweep", "A_heads_n60_Qwen3.6-27B"))
 
     fig, axes = plt.subplots(
-        1, 3, figsize=(6.5, 1.72),
-        gridspec_kw={"width_ratios": [1.32, 0.62, 1.0], "wspace": 0.30},
+        1, 2, figsize=(6.5, 1.78),
+        gridspec_kw={"width_ratios": [0.80, 1.0], "wspace": 0.28},
     )
 
+    # Both panels are R_z, which is what the paper's four-pairing tracking table
+    # reports; the metric goes in the title because the language panels use L_z.
     _branch_panel(
-        axes[0], language,
-        label_at={"resid": (45, 0.14), "attn": (42, 0.20), "mlp": (45, -0.34)},
-        annotate=("attention carries most\nof the stream here",
-                  (39, 1.92), (26.5, 1.32)),
+        axes[0], tracking,
+        label_at={"resid": (45, 0.007), "attn": (48, 0.006), "mlp": (39, -0.009)},
     )
-    axes[0].set_xticks([12, 18, 24, 30, 36, 42, 48])
-    axes[0].set_xlim(11, 57)
-    # The metric goes in the title, not only the axis: panel (b) is drawn in R_z
-    # from an older artifact, and two panels side by side in different units with
-    # nothing saying so is how a reader is misled.
-    panel(axes[0], r"a  language family, $-\log_{10}(\mathrm{rank})$",
-          "layer of the patched component", r"$\Delta$ donor, at matched distance")
-
-    # Panel (b) keeps R_z: its artifact predates the second metric, and the axes
-    # are therefore *not* shared. Different scales, so both are labelled -- a
-    # borrowed y-axis here would silently misplace every tracking point.
-    _branch_panel(axes[1], tracking, label_at={})
-    axes[1].set_xticks([33, 39, 45])
-    axes[1].set_xlim(32, 49.5)
-    axes[1].annotate("attention peak\nmoves to L48",
-                     xy=(48, 0.026), xytext=(38.5, 0.046),
+    axes[0].set_xticks([33, 36, 39, 42, 45, 48])
+    axes[0].set_xlim(32.4, 52)
+    # Annotate BOTH attention cells, not a single "peak". L39 is the larger of the
+    # two in the mean over the four pairings under all of R_z, L_z and M_z; L48
+    # leads in two pairings of four. Naming either one the peak was wrong.
+    axes[0].annotate("attention shared\nby L39 and L48",
+                     xy=(47.6, 0.0125), xytext=(38.5, 0.055),
                      color=INK, fontsize=6.5, ha="center", va="bottom",
                      arrowprops=dict(arrowstyle="-", color=GREY, linewidth=0.6,
                                      shrinkA=1, shrinkB=2))
-    panel(axes[1], r"b  tracking family, $R_z$", "layer", None)
+    panel(axes[0], r"a  tracking family, $R_z$", "layer of the patched component",
+          r"$\Delta$ donor, at matched distance")
 
-    # (c) the case study and its non-replication, head by head at L39
-    ax = axes[2]
+    # (b) the case study in both families, head by head at L39
+    ax = axes[1]
     for table, color, marker, name, dashes, dy in [
         (heads, RESID, "o", "language", None, 0.004),
         (tracking, ATTN, "s", "tracking", DASH_LONG, -0.005),
@@ -412,14 +375,16 @@ def fig_gather() -> None:
     if reference:
         ax.axhline(reference["point"], color=GREY, linewidth=0.7,
                    linestyle=(0, (4, 2.5)))
-        ax.annotate("attn.L39 block $=$ resid.L39", xy=(0.2, reference["point"]),
-                    color=GREY, fontsize=6.2, va="top")
-    ax.annotate("H15", xy=(15, heads[(39, "attn.L39.H15", "attn")]["point"] + 0.003),
-                color=INK, fontsize=6.5, ha="center", va="bottom")
+        ax.annotate("attn.L39 block $=$ resid.L39 (language)",
+                    xy=(0.2, reference["point"] + 0.0015),
+                    color=GREY, fontsize=6.2, va="bottom")
+    ax.annotate("H15", xy=(15.6, heads[(39, "attn.L39.H15", "attn")]["point"]),
+                color=INK, fontsize=6.5, ha="left", va="center")
     zero_line(ax)
     ax.set_xticks([0, 5, 10, 15, 20, 23])
     ax.set_xlim(-0.7, 29)
-    panel(ax, "c  heads of L39", "attention head", r"$\Delta$ donor $R_z$")
+    panel(ax, "b  heads of L39, both families", "attention head",
+          r"$\Delta$ donor $R_z$")
 
     save(fig, "gather")
 
@@ -427,56 +392,25 @@ def fig_gather() -> None:
 # --- 4. the behavioural window -------------------------------------------
 
 
-def _depth_rates() -> tuple[list[int], dict, list[float], list[float]]:
-    """Answer rates by patch layer, with the per-distractor control.
-
-    A patch that merely destroys the computation drives the answer toward uniform
-    over the candidate set, which lifts the donor's symbol from ~0 to ~1/n for
-    free. So the effect is donor rate minus the *matched* per-distractor rate, and
-    the distractor series is plotted beside it rather than assumed away.
-    """
-    observations = [
-        json.loads(line)
-        for line in (
-            DATA / "counterfactual" / "cf_resid_depth_Qwen3.6-27B_observations.jsonl"
-        ).read_text().splitlines()
-        if line.strip()
-    ]
-    candidates = {
-        r.semantic_instance_id: set(r.candidate_answers)
-        for r in read_jsonl(DATA / "language" / "Qwen3.6-27B_matched_n400_s0.jsonl")
-        if r.condition is Condition.FLEXIBLE
+def _depth_rates(seed: int = 0) -> tuple[list[int], dict, list[float], list[float]]:
+    """``_controlled_depth`` reshaped for the language panels; ``seed`` picks the
+    pairing."""
+    tag = {0: "", 1: "_s1", 2: "_s2"}[seed]
+    out = _controlled_depth(f"cf_resid_depth_n150{tag}_Qwen3.6-27B", "Qwen3.6-27B")
+    rates = {
+        "donor": out["donor"],
+        "distractor": out["distractor"],
+        "accuracy": out["accuracy"],
+        "effect": out["point"],
     }
-    by_layer = defaultdict(list)
-    for o in observations:
-        by_layer[int(o["component"].split(".L")[1])].append(o)
-
-    layers, rates, lo, hi = [], defaultdict(list), [], []
-    for layer in sorted(by_layer):
-        group = by_layer[layer]
-        donor, other, gold = [], [], []
-        for o in group:
-            others = candidates[o["target_instance"]] - {o["gold_symbol"],
-                                                         o["donor_symbol"]}
-            donor.append(float(o["patched_is_donor_symbol"]))
-            other.append(float(o["patched_answer"] in others) / max(len(others), 1))
-            gold.append(float(o["patched_is_gold"]))
-        estimate = paired_bootstrap(np.array(donor), np.array(other), seed=0)
-        layers.append(layer)
-        rates["donor"].append(float(np.mean(donor)))
-        rates["distractor"].append(float(np.mean(other)))
-        rates["accuracy"].append(float(np.mean(gold)))
-        rates["effect"].append(estimate.point)
-        lo.append(estimate.lo)
-        hi.append(estimate.hi)
-    return layers, rates, lo, hi
+    return [int(x) for x in out["layer"]], rates, out["lo"], out["hi"]
 
 
 def fig_window() -> None:
     """Both edges of the transport window, and what each edge is."""
     layers, rates, lo, hi = _depth_rates()
     repair = json.load(
-        (DATA / "specificity" / "repair_Qwen3.6-27B_results.json").open()
+        artifact("specificity", "repair_span1_n100_Qwen3.6-27B_results").open()
     )["results"]
 
     fig, axes = plt.subplots(
@@ -486,18 +420,20 @@ def fig_window() -> None:
 
     # (a) the three rates, so destruction is visible rather than argued
     ax = axes[0]
-    window(ax, 38.5, 48.5, "L39-L48")
+    window(ax, 35.5, 42.5, "L36-L42")
     for key, color, marker, dashes, name, focal, dy in [
         ("donor", RESID, "o", None, "donor's symbol", True, 0.0),
-        ("accuracy", ATTN, "s", DASH_LONG, "correct answer", False, -0.055),
-        ("distractor", GREY, "^", DASH_DOT, "distractor", False, 0.055),
+        # At L57 accuracy and distractor both land near 0.21, so the labels need real
+        # separation; "accuracy" is also short enough not to run off the panel.
+        ("accuracy", ATTN, "s", DASH_LONG, "accuracy", False, +0.055),
+        ("distractor", GREY, "^", DASH_DOT, "distractor", False, -0.075),
     ]:
         series(ax, layers, rates[key], color=color, marker=marker, dashes=dashes,
                width=1.5 if focal else 1.0, zorder=4 if focal else 3)
         endlabel(ax, layers[-1], rates[key][-1] + dy, name, color, dx=0.8, size=6.5,
                  weight="bold" if focal else "normal")
     ax.axhline(0.25, color=GREY, linewidth=0.6, linestyle=(0, (3.5, 3)))
-    ax.annotate("chance", xy=(24.3, 0.265), color=GREY, fontsize=6.3)
+    ax.annotate("chance", xy=(24.3, 0.205), color=GREY, fontsize=6.3)
     ax.set_xlim(23, 71)
     ax.set_xticks([24, 33, 42, 51, 57])
     ax.set_ylim(-0.03, 1.03)
@@ -505,7 +441,7 @@ def fig_window() -> None:
 
     # (b) the controlled effect: where transport beats destruction
     ax = axes[1]
-    window(ax, 38.5, 48.5, "L39-L48")
+    window(ax, 35.5, 42.5, "L36-L42")
     series(ax, layers, rates["effect"], lo, hi, color=RESID, marker="o", width=1.5)
     zero_line(ax)
     ax.annotate("repair\nbelow", xy=(33, 0.03), xytext=(28.0, 0.30), color=GREY,
@@ -547,12 +483,12 @@ def fig_window() -> None:
 def fig_mechanism() -> None:
     """Selective necessity, and mediation through one derived direction."""
     ablation = json.load(
-        (DATA / "ablate" / "loo_necessity_Qwen3.6-27B_results.json").open()
+        artifact("ablate", "loo_necessity_Qwen3.6-27B_results").open()
     )["results"]
     observations = [
         json.loads(line)
         for line in (
-            DATA / "mediate" / "wide_n80_Qwen3.6-27B_observations.jsonl"
+            artifact("mediate", "wide_n150_Qwen3.6-27B", "observations")
         ).read_text().splitlines()
         if line.strip()
     ]
@@ -599,25 +535,8 @@ def fig_mechanism() -> None:
     # plotted individually cannot be, which is why the null is drawn as a spread
     # rather than one interval.
     ax = axes[1]
-    grouped = defaultdict(lambda: defaultdict(dict))
-    for o in observations:
-        if o["dose"] not in (0.0, 1.0) or o["projection"] != "absolute":
-            continue
-        key = (
-            f"wrong:{o['wrong_token_id']}" if o["control"] == "wrong_all"
-            else o["mode"]
-        )
-        grouped[o["component"]][o["target_instance"]][key] = o
+    grouped, loss = _mediation_losses(observations)
     components = ["resid.L39", "resid.L42"]
-
-    def loss(instances, key):
-        """Paired full-minus-`key` loss in donor-symbol rate, or None if absent."""
-        rows = [v for v in instances if "full" in v and key in v]
-        if len(rows) < 10:
-            return None
-        full = np.array([float(v["full"]["is_donor_symbol"]) for v in rows])
-        other = np.array([float(v[key]["is_donor_symbol"]) for v in rows])
-        return paired_bootstrap(full, other, seed=0)
 
     for i, component in enumerate(components):
         instances = list(grouped[component].values())
@@ -667,40 +586,41 @@ def fig_mechanism() -> None:
 
 
 def fig_spine() -> None:
-    """The causal chain in one row: transport, its behaviour, and its specificity.
-
-    Built for the main text, which otherwise carries these three results as walls of
-    layer numbers. Each panel is one of the paper's claims, and they are placed
-    together because the argument is that they are the same story measured three ways.
-    """
+    """The causal chain in one row: transport, its behaviour, and its specificity."""
+    # Four donor pairings, merged: `_matched_distance` averages over whatever paths it
+    # is given, so this is the mean over pairings as well as over readout distance. The
+    # per-pairing ranges belong in the table, not in a line drawn four times over.
     language = _matched_distance(
-        DATA / "sweep" / "n120_early_Qwen3.6-27B.json",
-        DATA / "sweep" / "n120_window_Qwen3.6-27B.json",
+        *(artifact("sweep", f"n120_grid_s{seed}_Qwen3.6-27B")
+          for seed in (0, 1, 2, 3)),
         field="delta_donor_logrank",
     )
     layers, rates, lo, hi = _depth_rates()
     observations = [
         json.loads(line)
         for line in (
-            DATA / "mediate" / "wide_n80_Qwen3.6-27B_observations.jsonl"
+            artifact("mediate", "wide_n150_Qwen3.6-27B", "observations")
         ).read_text().splitlines()
         if line.strip()
     ]
 
     fig, axes = plt.subplots(
         1, 3, figsize=(6.5, 1.85),
-        gridspec_kw={"width_ratios": [1.25, 1.0, 0.95], "wspace": 0.34},
+        gridspec_kw={"width_ratios": [1.22, 1.0, 0.86], "wspace": 0.46},
     )
 
     # (a) where the variable can be installed, in the non-saturating readout
     _branch_panel(
         axes[0], language,
-        label_at={"resid": (45, 0.10), "attn": (42, 0.18), "mlp": (45, -0.30)},
+        # The attention label sits at L48 and not L45: between L39 and L42 its own
+        # line falls from +1.61 to nothing, and a label lifted off L45 lands in the
+        # middle of that descent.
+        label_at={"resid": (42, 0.24), "attn": (48, 0.45), "mlp": (45, -0.30)},
     )
     axes[0].set_xticks([12, 24, 36, 48])
     axes[0].set_xlim(11, 55)
-    axes[0].annotate("no positive transport\nL24--L33",
-                     xy=(28, 0.02), xytext=(19, 0.75),
+    axes[0].annotate("no positive transport\nL24\u2013L33",
+                     xy=(30, 0.03), xytext=(24, 0.85),
                      color=GREY, fontsize=6.2, ha="center", va="bottom",
                      arrowprops=dict(arrowstyle="-", color=GREY, linewidth=0.6,
                                      shrinkA=1, shrinkB=2))
@@ -709,34 +629,20 @@ def fig_spine() -> None:
 
     # (b) the behavioural counterpart, with both edges visible
     ax = axes[1]
+    window(ax, 35.5, 42.5, "L36-L42")
     series(ax, layers, rates["effect"], lo, hi, color=RESID, marker="o")
     zero_line(ax)
     ax.set_xticks([33, 39, 45, 51, 57])
-    ax.annotate("survival", xy=(33, 0.01), xytext=(34, 0.44), color=GREY,
+    ax.annotate("survival\nfails below", xy=(33, 0.01), xytext=(28.5, 0.30), color=GREY,
                 fontsize=6.2, ha="center")
-    ax.annotate("destruction", xy=(55, 0.13), xytext=(53, 0.44), color=GREY,
-                fontsize=6.2, ha="center")
+    ax.annotate("accuracy $<$ 0.5:\nthe patch destroys", xy=(50, 0.26),
+                xytext=(46.5, 0.045), color=GREY, fontsize=6.2, ha="center")
     panel(ax, "b  counterfactual answer", "patch layer",
           "donor $-$ distractor")
 
     # (c) the specificity control: gold against every wrong concept
     ax = axes[2]
-    grouped = defaultdict(lambda: defaultdict(dict))
-    for o in observations:
-        if o["projection"] != "absolute" or o["dose"] not in (0.0, 1.0):
-            continue
-        key = (f"wrong:{o['wrong_token_id']}" if o["control"] == "wrong_all"
-               else o["mode"])
-        grouped[o["component"]][o["target_instance"]][key] = o
-
-    def loss(instances, key):
-        rows = [v for v in instances if "full" in v and key in v]
-        if len(rows) < 10:
-            return None
-        return paired_bootstrap(
-            np.array([float(v["full"]["is_donor_symbol"]) for v in rows]),
-            np.array([float(v[key]["is_donor_symbol"]) for v in rows]), seed=0,
-        )
+    grouped, loss = _mediation_losses(observations)
 
     components = ["resid.L39", "resid.L42"]
     for i, component in enumerate(components):
@@ -762,7 +668,8 @@ def fig_spine() -> None:
     ax.set_yticks(range(len(components)))
     ax.set_yticklabels(list(reversed(components)), fontsize=6.4)
     ax.set_ylim(-0.45, len(components) - 0.55)
-    ax.set_xlim(-0.05, 0.44)
+    ax.set_xlim(-0.035, 0.30)
+    ax.set_xticks([0.0, 0.1, 0.2, 0.3])
     ax.grid(False)
     ax.grid(True, axis="x")
     panel(ax, "c  mediation vs. every rival", "loss in answer rate")
@@ -773,15 +680,14 @@ def fig_spine() -> None:
 def fig_calibration() -> None:
     """A readout shift is not a calibrated measure of use.
 
-    The paper's most portable claim had no figure. Panel (a) is the whole argument:
-    three components land at the same readout level and do three different things to
-    behaviour. Panel (b) forestalls the obvious misreading --- the trial-level
-    relationship is real but weak, so the readout is uncalibrated, not uninformative.
+    Panel (a): three components at the same readout level do three different things to
+    behaviour. Panel (b): the trial-level relation is real but weak, so the readout is
+    uncalibrated, not uninformative.
     """
     rows = [
         json.loads(line)
         for line in (
-            DATA / "counterfactual" / "trial_level_Qwen3.6-27B_observations.jsonl"
+            artifact("counterfactual", "trial_level_Qwen3.6-27B", "observations")
         ).read_text().splitlines()
         if line.strip()
     ]
@@ -852,23 +758,17 @@ def fig_calibration() -> None:
 
 
 def _token(text: str) -> str:
-    """Display a token unambiguously: leading spaces and newlines must be visible.
-
-    ``repr`` already escapes the newline and shows the leading space, which is the
-    whole point: `' Korean'` and `'Korean'` are different tokens, and a figure that
-    renders them identically hides the distinction the readout turns on.
-    """
+    """Show a token unambiguously -- ``' Korean'`` and ``'Korean'`` are different
+    tokens."""
     return repr(text)[1:-1]
 
 
 def fig_example() -> None:
     """What the readout literally contains, for one instance in all four arms.
 
-    Two things this figure exists to show. The concept becomes top-1 at L42-L45 in
-    exactly the arms that need it verbalizably, and in the other two arms the readout
-    at those layers holds *that arm's* task content instead. And the absolute level of
-    ``R_z`` is not representation strength: the control arm reads $R_z = 0.9953$ at L45
-    while the gold token ranks 1155th and the top of the readout is about punctuation.
+    Also that the absolute level of ``R_z`` is not representation strength: the control
+    arm
+    reads 0.9953 at L45 while the gold token ranks 1155th.
     """
     path = next(
         (DATA / "example").glob("example_*_Qwen3.6-27B.json")
@@ -916,13 +816,14 @@ def fig_example() -> None:
         row = d["conditions"][cond]
         ax.text(col + 0.5, 0.99, cond, color=color, fontsize=6.8, ha="center",
                 va="top", weight="bold")
-        question = row["instruction"].split("\n")[0].strip()
-        ax.text(col + 0.5, 0.935, textwrap.fill(question, 21), color=GREY,
-                fontsize=5.4, ha="center", va="top", linespacing=1.3)
+        # The instructions themselves are NOT printed here. Wrapped to a quarter of a
+        # 6.5in figure they overflow the column and collide with the neighbouring arm,
+        # and the panel's job is the readout rather than the prompt -- which the caption
+        # gives in full.
         by_layer = {r["layer"]: r for r in row["layers"]}
         for i, layer in enumerate(layers):
             r = by_layer[layer]
-            top = 0.755 - i * 0.250
+            top = 0.885 - i * 0.295
             ax.text(col + 0.03, top, f"L{layer}", color=GREY, fontsize=5.8,
                     va="top")
             ax.text(col + 0.97, top, f"rank {r['rank']:,}", color=GREY,
@@ -936,9 +837,226 @@ def fig_example() -> None:
     for col in range(1, 4):
         ax.axvline(col, color=GRID, linewidth=0.5)
     for i in range(1, len(layers)):
-        ax.axhline(0.790 - i * 0.250, color=GRID, linewidth=0.5)
+        ax.axhline(0.920 - i * 0.295, color=GRID, linewidth=0.5)
 
     save(fig, "example")
+
+
+# --- 7. across architectures ----------------------------------------------
+
+
+#: Depth of every checkpoint the paper measures. Absolute layer indices are not
+#: comparable across them, so the cross-architecture panels use layer / n_layers.
+N_LAYERS = {
+    "Qwen3.6-27B": 64,
+    "gemma-4-31B-it": 62,
+    "Llama-3.1-8B-Instruct": 32,
+    "phi-4": 40,
+}
+
+
+#: Fewest paired instances a mediation loss is estimated from. An analysis choice, not
+#: a detail; it lived in two figure functions before it lived here.
+MEDIATION_MIN_N = 10
+
+
+def _mediation_losses(observations: list[dict]) -> tuple[dict, Callable]:
+    """Mediation rows grouped by (component, instance, control), absolute projection at
+        full dose so every control is compared on the same 80 trials.
+    """
+    grouped = defaultdict(lambda: defaultdict(dict))
+    for o in observations:
+        if o["dose"] not in (0.0, 1.0) or o["projection"] != "absolute":
+            continue
+        key = (
+            f"wrong:{o['wrong_token_id']}" if o["control"] == "wrong_all"
+            else o["mode"]
+        )
+        grouped[o["component"]][o["target_instance"]][key] = o
+
+    def loss(instances, key):
+        """Paired full-minus-`key` loss in donor-symbol rate, or None if too few."""
+        rows = [v for v in instances if "full" in v and key in v]
+        if len(rows) < MEDIATION_MIN_N:
+            return None
+        return paired_bootstrap(
+            np.array([float(v["full"]["is_donor_symbol"]) for v in rows]),
+            np.array([float(v[key]["is_donor_symbol"]) for v in rows]), seed=0,
+        )
+
+    return grouped, loss
+
+
+def _controlled_depth(stem: str, model: str) -> dict[str, list[float]]:
+    """Distractor-controlled transport by patch depth, from one run's observations.
+
+    Eq. (distractor): donor-symbol rate minus the *matched* per-distractor rate, so a
+    patch
+    that destroys the computation has expectation zero. ``accuracy`` travels with it,
+    because
+    a large donor rate at low accuracy is wholesale replacement, not transport.
+    """
+    by_layer = defaultdict(list)
+    path = artifact("counterfactual", stem, "observations")
+    for line in path.read_text().splitlines():
+        if line.strip():
+            row = json.loads(line)
+            by_layer[int(row["component"].split(".L")[1])].append(row)
+    if not by_layer:
+        raise ValueError(f"{path.name}: no observations -- degenerate, not a null")
+
+    out = defaultdict(list)
+    for layer in sorted(by_layer):
+        rows = by_layer[layer]
+        donor, other = [], []
+        for r in rows:
+            size = r["n_other"]
+            if not size:
+                raise ValueError(
+                    f"{path.name}: |D| = 0, no matched per-distractor rate exists"
+                )
+            donor.append(float(r["patched_is_donor_symbol"]))
+            other.append(
+                float(r["patched_answer"] not in (r["gold_symbol"], r["donor_symbol"]))
+                / size
+            )
+        estimate = paired_bootstrap(np.array(donor), np.array(other), seed=0)
+        out["layer"].append(layer)
+        out["frac"].append(layer / N_LAYERS[model])
+        out["donor"].append(float(np.mean(donor)))
+        out["distractor"].append(float(np.mean(other)))
+        out["point"].append(estimate.point)
+        out["lo"].append(estimate.lo)
+        out["hi"].append(estimate.hi)
+        out["accuracy"].append(
+            float(np.mean([float(r["patched_is_gold"]) for r in rows]))
+        )
+    return out
+
+
+#: Below this patched accuracy the intervention has replaced the late computation
+#: wholesale, so the donor's symbol arrives without the variable having been
+#: transported. Trap 8: those cells are a design boundary, not a result.
+USABLE_ACCURACY = 0.5
+
+
+def _depth_panel(ax, seeds: list[dict], *, title: str, ylabel: str | None) -> None:
+    """One model's depth profile: every donor pairing, with the unusable band shaded.
+
+    Only the first seed carries a band -- what is worth seeing is whether the pairings
+    agree on
+    the shape. Accuracy shares the axis rather than getting a twin, since both series
+    are
+    rates.
+    """
+    destroyed = [
+        f
+        for f, a in zip(seeds[0]["frac"], seeds[0]["accuracy"], strict=True)
+        if a < USABLE_ACCURACY
+    ]
+    if destroyed:
+        ax.axvspan(min(destroyed) - 0.012, 1.0, color=GREY, alpha=0.10, linewidth=0,
+                   zorder=0)
+        ax.annotate("patch destroys\nthe computation",
+                    xy=(min(destroyed) + 0.014, 0.99),
+                    xycoords=("data", "axes fraction"), color=GREY, fontsize=6.2,
+                    va="top", ha="left")
+    for i, s in enumerate(seeds):
+        if i == 0:
+            series(ax, s["frac"], s["point"], s["lo"], s["hi"], color=RESID,
+                   marker="o", width=1.5, zorder=4)
+        else:
+            ax.plot(s["frac"], s["point"], color=RESID, linewidth=0.7, alpha=0.55,
+                    marker="", zorder=3)
+    series(ax, seeds[0]["frac"], seeds[0]["accuracy"], color=ATTN, marker="s",
+           dashes=DASH_LONG, width=1.0, zorder=3)
+    ax.axhline(USABLE_ACCURACY, color=GREY, linewidth=0.5, linestyle=(0, (2, 3)),
+               zorder=1)
+    zero_line(ax)
+    ax.set_xlim(0.30, 0.98)
+    ax.set_xticks([0.4, 0.5, 0.6, 0.7, 0.8, 0.9])
+    ax.set_ylim(-0.10, 1.06)
+    panel(ax, title, "fractional depth of the patch", ylabel)
+
+
+def fig_across() -> None:
+    """The window replicates across architectures; the entry effect on all four.
+
+    (a) and (b) share axes on purpose: different units would hide that the interpretable
+    cells
+    land at the same fractional depth in a 64-layer hybrid and a 62-layer dense model.
+    """
+    qwen = [
+        _controlled_depth(f"cf_resid_depth_n150{tag}_Qwen3.6-27B", "Qwen3.6-27B")
+        for tag in ("", "_s1", "_s2")
+    ]
+    gemma = [
+        _controlled_depth(f"cf_depth_gemma4_n150{tag}_gemma-4-31B-it", "gemma-4-31B-it")
+        for tag in ("", "_s1", "_s2")
+    ]
+
+    fig, axes = plt.subplots(
+        1, 3, figsize=(6.5, 1.85), sharey=False,
+        gridspec_kw={"width_ratios": [1.0, 0.92, 0.86], "wspace": 0.46},
+    )
+
+    _depth_panel(axes[0], qwen, title="a  Qwen3.6-27B, 64 layers (hybrid)",
+                 ylabel="rate")
+    endlabel(axes[0], 0.42, 0.99, "task accuracy", ATTN, dx=0, size=6.3)
+    endlabel(axes[0], 0.30, 0.06, "donor $-$ distractor", RESID, dx=0.015, size=6.3)
+    _depth_panel(axes[1], gemma, title="b  gemma-4-31B-it, 62 layers (dense)",
+                 ylabel=None)
+    axes[1].set_yticklabels([])
+    for ax, xy, xytext, text in (
+        (axes[0], (0.61, 0.367), (0.44, 0.72), "interpretable\n0.56\u20130.66"),
+        (axes[1], (0.597, 0.170), (0.42, 0.60), "interpretable\nat 0.60"),
+    ):
+        ax.annotate(text, xy=xy, xytext=xytext, color=INK, fontsize=6.3, ha="center",
+                    arrowprops=dict(arrowstyle="-", color=GREY, linewidth=0.6,
+                                    shrinkA=1, shrinkB=2))
+
+    # (c) the two 2x2 edges on every checkpoint. The point is the contrast between
+    # the rows: with the operator held fixed the effect is positive on all four,
+    # while the operator's own contribution is not even stable in sign.
+    ax = axes[2]
+    runs = [
+        ("Qwen-27B", "twobytwo_n200_Qwen3.6-27B_Qwen3.6-27B_matched_n400_s0"),
+        ("phi-4", "phi4_stage1_phi-4_phi-4_matched_n400_s0"),
+        ("Llama-8B", "llama_stage1_Llama-3.1-8B-Instruct_"
+                     "Llama-3.1-8B-Instruct_matched_n400_s0"),
+        ("gemma-31B", "gemma4_stage1_gemma-4-31B-it_"
+                      "gemma-4-31B-it_matched_n400_s0g4"),
+    ]
+    for i, (_model, stem) in enumerate(runs):
+        contrasts = json.load(
+            artifact("stage1", f"{stem}_summary").open()
+        )["contrasts"]
+        y = len(runs) - 1 - i
+        for offset, key, color, marker, label in (
+            (0.19, "flexible_vs_supplied", RESID, "o", "latent demand"),
+            (-0.19, "supplied_vs_control", GREY, "^", "operator alone"),
+        ):
+            e = contrasts[key]["delta_entry"]
+            ax.plot([e["lo"], e["hi"]], [y + offset] * 2, color=color, linewidth=1.1,
+                    zorder=4)
+            ax.plot([e["point"]], [y + offset], marker=marker, color=color,
+                    markersize=3.8, zorder=5)
+            if i == 3:
+                endlabel(ax, e["point"], y + offset - 0.22, label, color, dx=0.004,
+                         size=6.3)
+    ax.axvline(0, color=GREY, linewidth=0.6, linestyle=(0, (3.5, 3)))
+    ax.set_yticks(range(len(runs)))
+    ax.set_yticklabels([n for n, _ in reversed(runs)], fontsize=6.5)
+    ax.set_ylim(-0.85, len(runs) - 0.45)
+    ax.set_xlim(-0.085, 0.215)
+    # -0.05 and 0.00 overprint into "-0.050.00" at this panel's width; the zero
+    # reference line carries the sign instead.
+    ax.set_xticks([0.0, 0.10, 0.20])
+    ax.grid(False)
+    ax.grid(True, axis="x")
+    panel(ax, "c  entry effect, four checkpoints", r"$\Delta R_z$ (band mean)")
+
+    save(fig, "across")
 
 
 def main() -> None:
@@ -946,7 +1064,7 @@ def main() -> None:
     # fig_overview is not in the default build: the paper ships the vector-styled
     # render in paper/images/. Call it explicitly to regenerate the fallback.
     for fn in (fig_entry, fig_gather, fig_window, fig_mechanism, fig_spine,
-               fig_calibration, fig_example):
+               fig_across, fig_calibration, fig_example):
         fn()
 
 

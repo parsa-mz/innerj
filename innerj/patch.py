@@ -1,23 +1,18 @@
-"""Component-level capture and patching.
+"""Component-level capture and patching: the instrument for the whole project.
 
-This is the instrument for the rest of the project. Stage 1's counterfactual patch
-and Stage 2's component screening are the same operation at different granularity:
-run a *source* prompt, keep some component's output, then run a *target* prompt
-with that output substituted, and see what moves.
+Run a *source* prompt, keep some component's output, run a *target* prompt with that
+output
+substituted. Granularity bounds what a result can claim, patching a whole residual
+stream
+proving only that the information was somewhere upstream:
 
-Granularity matters for what a result can claim. Patching a whole residual stream
-proves only that the information was somewhere upstream. Patching one attention
-head's contribution, or one MLP's output, localises it. So three kinds:
-
-* ``resid`` -- the decoder layer's output. Coarse; the upper bound on any effect.
-* ``attn``  -- one head's slice of the attention output projection's input, which
-  is that head's contribution before it is mixed into the stream.
+* ``resid`` -- the layer's output. Coarse; the upper bound on any effect.
+* ``attn``  -- one head's slice of the output projection's input.
 * ``mlp``   -- one MLP block's output.
 
-Patching is restricted to chosen token positions, defaulting to the query position.
-Under a matched legend the *context* is identical across conditions, so context
-positions align across arms; only the instruction differs in length. Positions are
-therefore always resolved from the end of the sequence, never assumed equal.
+Positions are always resolved from the end of the sequence, never assumed equal: the
+context
+is identical across arms under a matched legend, but the instruction is not.
 """
 
 from __future__ import annotations
@@ -37,15 +32,11 @@ ComponentKind = Literal["resid", "attn", "mlp"]
 class Component:
     """A patchable site.
 
-    ``head`` selects one attention head's contribution; ``head=None`` on an
-    ``attn`` component means the whole attention output, which is the unit the
-    coarse sweep uses. ``resid`` and ``mlp`` take no head index.
-
-    Ordered, so callers can deduplicate a component set deterministically. The
-    ordering is written out rather than generated: ``order=True`` compares ``head``
-    directly and raises on ``int`` against ``None``, which made any set containing
-    both a whole attention output and one of its heads unsortable --- a crash that
-    only appears when those two are requested in the same run.
+    ``head`` selects one head's contribution, ``head=None`` on ``attn`` the whole
+    output. The
+    ordering is written out rather than generated, because ``order=True`` raises on
+    ``int``
+    against ``None`` and crashed on any set holding both a block and one of its heads.
     """
 
     kind: ComponentKind
@@ -82,16 +73,14 @@ class Component:
 def attention_projection(model: HFLensModel, layer: int) -> tuple[torch.nn.Module, str]:
     """The attention branch's output projection at ``layer``, and its layer type.
 
-    The primary checkpoint is a **hybrid**: ``full_attention_interval=4`` means only
-    every fourth layer carries standard attention (``self_attn.o_proj``, 24 heads);
-    the other 48 use a gated delta net (``linear_attn.out_proj``, 48 value heads).
-    Both project a 6144-wide concatenation into the 5120-wide stream, so the code
-    below is uniform once the module is resolved -- but the *number of heads*
-    differs, and hard-coding either one would silently misalign three quarters of
-    the model.
-
-    Raises on an unrecognised layer rather than guessing, because a wrong module
-    path produces plausible numbers instead of an error.
+    The primary checkpoint is a **hybrid**: only every fourth layer carries standard
+    attention
+    (24 heads), the rest a gated delta net (48 value heads). Both project 6144 into
+    5120, so the
+    code is uniform once resolved, but hard-coding either head count silently misaligns
+    three
+    quarters of the model. Raises on an unrecognised layer, a wrong module path yielding
+    plausible numbers rather than an error.
     """
     block = model.layers[layer]
     if hasattr(block, "self_attn") and hasattr(block.self_attn, "o_proj"):
@@ -125,12 +114,9 @@ def n_attention_heads(model: HFLensModel, layer: int) -> int:
 
 
 def head_width(model: HFLensModel, layer: int) -> int:
-    """Per-head width of the attention output projection's input at ``layer``.
-
-    Read from the module and the layer's own head count, never from ``head_dim``:
-    grouped-query and linear-attention layers both have
-    ``n_heads * head_dim != d_model``, and on the primary model the projection
-    takes 6144 inputs against a 5120-wide stream.
+    """Per-head width of the projection's input, read from the module and the layer's
+    own
+        head count -- never ``head_dim``, since ``n_heads * head_dim != d_model`` here.
     """
     projection, _ = attention_projection(model, layer)
     n_heads = n_attention_heads(model, layer)
@@ -170,11 +156,8 @@ def capture(
     positions: list[int] | None = None,
     max_seq_len: int = 512,
 ) -> dict[Component, torch.Tensor]:
-    """Run ``prompt`` and keep each component's output at ``positions``.
-
-    Returns ``{component: Tensor[n_positions, width]}``, detached and on the
-    component's own device.
-    """
+    """Run ``prompt``, keeping ``{component: Tensor[n_positions, width]}`` at
+    ``positions``."""
     positions = positions or [-1]
     input_ids = model.encode(prompt, max_length=max_seq_len)
     resolved = _resolve(positions, int(input_ids.shape[1]))
@@ -226,20 +209,30 @@ def run_patched(
     patches: dict[Component, torch.Tensor],
     *,
     positions: list[int] | None = None,
+    read_positions: list[int] | None = None,
     max_seq_len: int = 512,
     record_layers: list[int] | None = None,
 ) -> tuple[torch.Tensor, dict[int, torch.Tensor]]:
     """Run ``prompt`` with each component's output replaced at ``positions``.
 
-    Returns ``(logits_at_positions, {layer: residual_at_positions})`` so a caller
-    gets both the behavioural and the readout consequence from one forward pass.
-    An empty ``patches`` dict gives the clean run, which is the baseline every
-    effect is measured against.
+    Returns ``(logits, {layer: residual})`` at ``read_positions``, so one pass gives
+    both the
+    behavioural and the readout consequence; an empty ``patches`` is the clean baseline.
+
+    **Patch site and readout site are different axes.** ``read_positions`` defaults to
+    ``positions``, which was right only while the patch was at the query region: move it
+    to the
+    passage and ``[-1]`` becomes the last *passage* token, so the readout measures the
+    wrong
+    location while looking correct (trap 7).
     """
     positions = positions or [-1]
     input_ids = model.encode(prompt, max_length=max_seq_len)
     seq_len = int(input_ids.shape[1])
     resolved = _resolve(positions, seq_len)
+    read_resolved = (
+        _resolve(read_positions, seq_len) if read_positions is not None else resolved
+    )
     recorded: dict[int, torch.Tensor] = {}
     handles = []
 
@@ -292,7 +285,7 @@ def run_patched(
 
         def recorder(_module, _args, output, layer=layer):
             tensor = output[0] if isinstance(output, tuple) else output
-            recorded[layer] = tensor[0, resolved].detach().float()
+            recorded[layer] = tensor[0, read_resolved].detach().float()
 
         handles.append(model.layers[layer].register_forward_hook(recorder))
 

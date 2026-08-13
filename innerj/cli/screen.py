@@ -15,15 +15,16 @@ from innerj.cli import common
 from innerj.experiments.screen import (
     coarse_components,
     head_components,
+    layers_above,
     pool,
-    readout_layers,
     screen,
     survivors,
 )
 from innerj.model import band
 from innerj.tasks.base import Condition
 
-CONTRAST = (Condition.FLEXIBLE, Condition.AUTOMATIC)
+#: Both arms this CLI needs complete. Order is the log label only.
+ARMS = (Condition.FLEXIBLE, Condition.AUTOMATIC)
 
 
 def main() -> None:
@@ -56,7 +57,7 @@ def main() -> None:
     # since a coarse and a heads run over the same records are different results.
     args.tag = args.tag or args.which
 
-    grouped = common.instances(args, CONTRAST)
+    grouped = common.instances(args, ARMS)
     pairs = [
         (g[Condition.FLEXIBLE], g[Condition.AUTOMATIC]) for g in grouped.values()
     ]
@@ -65,7 +66,7 @@ def main() -> None:
     layers = args.layers or [
         layer for layer in band(model.n_layers) if 36 <= layer <= 48
     ]
-    read = readout_layers(layers, model.n_layers, n_readout=args.n_readout)
+    read = layers_above(layers, model.n_layers, n_readout=args.n_readout)
 
     components = (
         coarse_components(layers) if args.which == "coarse"

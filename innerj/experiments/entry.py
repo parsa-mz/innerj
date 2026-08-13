@@ -1,23 +1,19 @@
 """Stage 1: separate latent availability from workspace entry.
 
-The claim this stage has to establish is a dissociation, not an effect:
+The claim is a dissociation, not an effect: ``z`` is present and usable in *both* arms,
+but
+strongly represented in J-space only in the flexible one. Without it, "the write gate"
+is
+indistinguishable from "the model knows ``z``". Three quantities per instance -- ``R_z``
+at
+the query position across the band, forced-choice accuracy, and the model's own
+next-token
+distribution, which never touches the lens.
 
-    ``z`` is present and usable in *both* the automatic and the flexible
-    condition, but strongly represented in J-space only in the flexible one.
-
-Without it, "the write gate" is indistinguishable from "the model knows ``z``",
-and everything downstream measures the wrong thing. So the stage reports three
-quantities per instance and the contrast between conditions for each:
-
-* ``R_z`` at the query position, across the workspace band -- workspace entry;
-* forced-choice accuracy -- behavioural availability;
-* the model's own next-token distribution -- a sanity channel that never touches
-  the lens, so it cannot inherit a lens artifact.
-
-Measurement is pinned to the query position, never a passive sentence-final
-read. A workspace is for holding things until they are asked for; reading it
-where nothing asks understates persistence badly enough that a prior project
-retracted its own headline over it.
+Measurement is pinned to the query position, never a passive sentence-final read:
+reading a
+workspace where nothing asks understates persistence badly enough that a prior project
+retracted a headline over it.
 """
 
 from __future__ import annotations
@@ -50,6 +46,10 @@ class Trial:
     query_position: int
     seq_len: int
     band_mean_r_z: float
+    #: The non-saturating band summary. `R_z` is pinned above 0.999 in most of the
+    #: cells this is read from, so a contrast quoted only in `R_z` cannot be checked
+    #: against a measure that moves there.
+    band_mean_neg_log_rank: float
     band_mean_m_z: float
     band_r_z: float
     band_m_z: float
@@ -81,6 +81,7 @@ class Trial:
             query_position=position,
             seq_len=seq_len,
             band_mean_r_z=readout.band_mean_r_z,
+            band_mean_neg_log_rank=readout.band_mean_neg_log_rank,
             band_mean_m_z=readout.band_mean_m_z,
             band_r_z=readout.band_r_z,
             band_m_z=readout.band_m_z,
@@ -105,11 +106,8 @@ def measure(
     layers: list[int],
     max_seq_len: int = 512,
 ) -> Trial:
-    """Measure one record at its query position.
-
-    The query position is the final prompt token -- the point at which the model
-    has been asked and must answer. Entry is read there; behaviour is scored on
-    the same forward pass, so the two cannot drift apart.
+    """Measure one record at its query position, scoring behaviour on the same forward
+        pass so the two cannot drift apart.
     """
     prompt = record.prompt
     input_ids = model.encode(prompt, max_length=max_seq_len)
@@ -152,10 +150,8 @@ def run(
     layers: list[int],
     max_seq_len: int = 512,
 ) -> list[Trial]:
-    """Measure every record, printing as it goes.
-
-    Progress logging is permanent, not scaffolding: a long silent run against
-    its own timeout is indistinguishable from a hang.
+    """Measure every record, printing as it goes -- a long silent run against its own
+        timeout is indistinguishable from a hang.
     """
     trials: list[Trial] = []
     for record in console.track(records, "processing"):
@@ -169,19 +165,19 @@ def run(
 class Dissociation:
     """The Stage-1 result for one condition pair.
 
-    ``delta_entry`` is the headline: how much more of the concept is in the
-    workspace when the task demands flexible reuse. It is computed on the *mean*
-    over band layers, because the maximum saturates.
-
-    ``delta_accuracy`` is the guard. If behaviour moves as much as entry, the two
-    conditions differ in difficulty and the contrast is confounded rather than
-    informative -- which is why the format-matched control arm exists.
+    ``delta_entry`` is the headline, on the *mean* over band layers because the maximum
+    saturates. ``delta_accuracy`` is the guard: if behaviour moves as much as entry, the
+    arms
+    differ in difficulty and the contrast is confounded.
     """
 
     family: str
     high: str
     low: str
     delta_entry: Estimate
+    #: The same contrast under the non-saturating readout, so a claim can be checked
+    #: against a measure that is not pinned at the ceiling.
+    delta_entry_logrank: Estimate
     delta_margin: Estimate
     delta_entry_max: Estimate
     delta_accuracy: Estimate
@@ -200,12 +196,13 @@ class Dissociation:
     def verdict(self) -> str:
         """A dissociation needs entry to move *and* both arms to be performable.
 
-        The chance comparison is the check that matters and the one this function
-        originally lacked. An arm at or below its own chance floor is not doing the
-        task, so its readout is a readout of failure -- and because the floor
-        depends on the candidate-set size, comparing accuracy against a fixed
-        constant cannot detect it. A tracking family passed an earlier version of
-        this guard with a report arm at 0.125 against a chance of 0.250.
+                An arm at or below its own chance floor is not doing the task, so its
+                readout is a
+                readout of failure -- and since the floor depends on candidate-set size,
+                comparing
+                against a fixed constant cannot detect it. A tracking family passed an
+                earlier guard
+                with a report arm at 0.125 against a chance of 0.250.
         """
         if min(self.accuracy_high, self.accuracy_low) > 0.995:
             return "INVALID: both arms at ceiling, no behavioural variance"
@@ -272,6 +269,10 @@ def dissociation(
         delta_entry=paired_bootstrap(
             arr(hi, "band_mean_r_z"), arr(lo, "band_mean_r_z"), seed=seed
         ),
+        delta_entry_logrank=paired_bootstrap(
+            arr(hi, "band_mean_neg_log_rank"),
+            arr(lo, "band_mean_neg_log_rank"), seed=seed,
+        ),
         delta_margin=paired_bootstrap(
             arr(hi, "band_mean_m_z"), arr(lo, "band_mean_m_z"), seed=seed
         ),
@@ -292,12 +293,11 @@ def dissociation(
 
 @dataclass
 class Interaction:
-    """The 2x2 that separates latent-variable demand from compositional work.
+    """The 2x2 separating latent-variable demand from compositional work.
 
-    ``flexible`` differs from ``control`` in two ways at once: it must infer ``z``
-    *and* apply a prompted operator to it. Matching prompt format and accuracy does
-    not match computation, so the flexible-minus-control contrast is not by itself a
-    measure of latent-variable demand. Crossing the two factors separates them:
+    ``flexible`` differs from ``control`` twice over -- it must infer ``z`` *and* apply
+    a
+    prompted operator -- so crossing the factors is what separates them:
 
     ==================  ===============  =================
     ``z`` inferred?     no operator      operator
@@ -306,12 +306,11 @@ class Interaction:
     yes                 ``report``       ``flexible``
     ==================  ===============  =================
 
-    ``operator_only`` is what an arm that applies the operator to a value *given in
-    the prompt* achieves without inferring anything --- the size of the confound.
-    ``latent_demand`` holds the operator fixed and varies only the inference, so it
-    is the clean estimate. ``point`` is the interaction itself, bootstrapped as one
-    paired quantity per instance rather than assembled from four point estimates,
-    which would discard the pairing.
+    ``operator_only`` is the size of the confound and ``latent_demand`` the clean
+    estimate.
+    ``point`` is the interaction itself, bootstrapped as one paired quantity per
+    instance rather
+    than assembled from four point estimates, which would discard the pairing.
     """
 
     latent_demand: Estimate
@@ -324,11 +323,7 @@ class Interaction:
 
     @property
     def confound_share(self) -> float:
-        """Fraction of the both-vs-neither effect that the operator alone reproduces.
-
-        The number that says how much of a published ``flexible - control`` effect
-        was never about the latent variable.
-        """
+        """Fraction of the both-vs-neither effect the operator alone reproduces."""
         if self.both.point == 0:
             return float("nan")
         return self.operator_only.point / self.both.point

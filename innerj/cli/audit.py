@@ -1,23 +1,19 @@
 """Check every number in the paper against the artifacts on disk.
 
-Motivation, concretely. Two numbers in this paper were wrong on 2026-08-03 and both
-had been in the write-up for weeks: the mediation shares (56%/36%, copied from a
-stale ``verdict`` string, against a recomputed 50%/31%) and "changed the answer zero
-times in 80 trials" (the patch changes 4 answers; what is zero is the *predicted
-counterfactual* rate). Both were found by recomputing from observations rather than
-by reading. Two for two on the claims that happened to get checked is not a rate to
-submit on, so this checks all of them.
+Two numbers were wrong on 2026-08-03 after weeks in the write-up: the mediation shares
+(56%/36%, copied from a stale ``verdict`` string, against a recomputed 50%/31%) and
+"changed
+the answer zero times in 80 trials" (the patch changes 4 answers; what is zero is the
+*predicted counterfactual* rate). Both were found by recomputing from observations.
 
-What it does. Every numeric literal in ``main.tex`` is extracted with its
-surrounding prose, and every number reachable in the artifact tree is collected at
-the precision it would be printed. A paper number that appears in no artifact is
-**not necessarily wrong** -- derived quantities (shares, ratios, fold-changes,
-counts of layers) legitimately appear nowhere -- but it is a number no artifact
-supports directly, so it has to be justified by hand. That list is the output.
-
-The point is to make the unsupported set small and explicit, not to prove the paper
-correct. A number that matches an artifact still has to match the *right* artifact,
-which is why the report names where each one was found.
+Every numeric literal in ``main.tex`` is matched against every number reachable in the
+artifact tree, at the precision it would be printed. A paper number appearing in no
+artifact
+is **not necessarily wrong** -- derived quantities legitimately appear nowhere -- but it
+must
+be justified by hand, and that list is the output. A number that matches an artifact
+still
+has to match the *right* one, which is why the report names where each was found.
 
 Usage:
     innerj audit                 # unsupported numbers only
@@ -33,7 +29,7 @@ from pathlib import Path
 
 from innerj import config
 
-DATA = config.DATA_ROOT
+DATA_ROOT = config.DATA_ROOT
 
 #: Numbers that are structural rather than measured: page furniture, LaTeX sizing,
 #: dates, section numbers, and the model/vocabulary constants stated in the setup.
@@ -70,15 +66,9 @@ def paper_numbers(path: Path) -> list[tuple[str, str]]:
 def artifact_numbers() -> dict[str, str]:
     """Every number in the artifact tree, at the precisions a paper would print.
 
-    One source per key, not a set: the report names a single artifact per number,
-    and retaining every source held ~97k strings to show ~27k of them.
-
-    Two things a longer version of this did that measurably do nothing.
-    ``f"{x:.0f}"`` never emits a trailing dot, so ``rstrip(".")`` was a no-op; and
-    a separate ``str(int(value))`` key for integers adds nothing the
-    zero-places format does not already produce --- verified across all 332,778
-    numbers in the tree, which yields the same 27,438 keys either way. It would
-    differ only above 2^53, which no artifact here reaches.
+    One source per key, not a set: the report names a single artifact per number, and
+    retaining
+    every source held ~97k strings to show ~27k.
     """
     found: dict[str, str] = {}
     seen: set[tuple[float, str]] = set()
@@ -104,8 +94,8 @@ def artifact_numbers() -> dict[str, str]:
         else:
             record(node, source)
 
-    for path in sorted(DATA.rglob("*.json")) + sorted(DATA.rglob("*.jsonl")):
-        source = str(path.relative_to(DATA))
+    for path in sorted(DATA_ROOT.rglob("*.json")) + sorted(DATA_ROOT.rglob("*.jsonl")):
+        source = str(path.relative_to(DATA_ROOT))
         try:
             if path.suffix == ".jsonl":
                 for line in path.read_text().splitlines():
@@ -118,20 +108,42 @@ def artifact_numbers() -> dict[str, str]:
     return found
 
 
+def check_figure_deck(tex: Path) -> list[str]:
+    """Compare the built deck against the copy the paper compiles from --
+        ``make sync-figures`` is a step a person has to remember.
+    """
+    paper_figures = tex.parent / "figures"
+    if not paper_figures.is_dir():
+        return []
+    problems = []
+    for built in sorted(config.FIGURE_DIR.glob("*.png")):
+        shipped = paper_figures / built.name
+        if not shipped.is_file():
+            problems.append(f"{built.name}: in figures/ but not in {paper_figures}")
+        elif built.read_bytes() != shipped.read_bytes():
+            problems.append(f"{built.name}: differs from {paper_figures}")
+    return problems
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--show-all", action="store_true")
     parser.add_argument(
         "--tex", type=Path, default=config.PAPER_TEX,
-        help="paper source to check. The paper is not in this repository, so point "
-        "this at it, or set INNERJ_PAPER_TEX.",
+        help="paper source to check. Defaults to the ICLR manuscript in this "
+        "repository; override it or set INNERJ_PAPER_TEX.",
     )
     args = parser.parse_args()
 
     if not args.tex.is_file():
         raise SystemExit(
-            f"no paper source at {args.tex}. The paper lives outside this repository; "
-            f"pass --tex or set INNERJ_PAPER_TEX."
+            f"no paper source at {args.tex}. Pass --tex or set INNERJ_PAPER_TEX."
+        )
+    stale = check_figure_deck(args.tex)
+    if stale:
+        raise SystemExit(
+            "the paper's figures are not the built ones -- run `make sync-figures`:\n  "
+            + "\n  ".join(stale)
         )
     claims = paper_numbers(args.tex)
     found = artifact_numbers()

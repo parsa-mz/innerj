@@ -1,27 +1,16 @@
 """Stage 2b: is the effect content-specific, or does patching there just help?
 
-The coarse sweep found that many components move the readout when patched at the
-query position, several of them *downward*. So "largest positive effect" does not
-yet mean "carries the latent variable". A component could raise the gold concept's
-rank by generally sharpening the readout, with no relation to which language the
-donor was holding.
+Many components move the readout when patched, several *downward*, so "largest positive
+effect" does not yet mean "carries the latent variable". Patch from a donor whose latent
+value **differs** from the target's and read out two concepts: the **target's** gold
+language, which a generic sharpener still raises, and the **donor's**, which only a
+component carrying the latent value raises. The predictions are opposite, so one
+experiment
+decides it.
 
-This is the test that separates the two. Patch a component from a donor whose
-latent value is **different** from the target's, and read out *two* concepts:
-
-* the **target's** gold language -- a generic-sharpening component still raises it;
-* the **donor's** language -- only a component actually carrying the latent value
-  raises this one.
-
-A write component should transport the donor's content: donor-language rank up,
-and ideally target-language rank down. A generic amplifier moves the target's rank
-up and leaves the donor's untouched. The two predictions are opposite, so one
-experiment decides it.
-
-This is the "same component, wrong latent variable" control, and without it the
-whole screen is compatible with an interpretability illusion where a subspace
-intervention activates a pathway that has nothing to do with the model's own
-mechanism.
+Without this control the whole screen is compatible with an interpretability illusion
+where
+a subspace intervention activates a pathway unrelated to the model's mechanism.
 """
 
 from __future__ import annotations
@@ -34,9 +23,10 @@ from jlens import JacobianLens
 from jlens.hf import HFLensModel
 
 from innerj import console
-from innerj.analysis.readout import percentile_rank
+from innerj.analysis.readout import percentile_rank, transported_logits
 from innerj.analysis.stats import Estimate, paired_bootstrap
 from innerj.patch import Component, capture, run_patched
+from innerj.positions import READ_AT, PositionFn, describe, labelled
 from innerj.tasks.base import Record
 
 
@@ -45,6 +35,11 @@ class SpecificityObservation:
     """One (component, target, mismatched donor) trial, read on both concepts."""
 
     component: str
+    #: Which positions were patched. Trap 16: an observations file that omits an
+    #: experimental factor cannot be re-analysed by it, and this experiment gained a
+    #: position axis (the repair test's span-matched and passage-inclusive arms)
+    #: after the class was first written.
+    positions: str
     target_instance: str
     donor_instance: str
     target_value: str
@@ -60,6 +55,7 @@ class SpecificityResult:
     """Does patching this component transport the donor's latent value?"""
 
     component: str
+    positions: str
     delta_target: Estimate
     delta_donor: Estimate
     n: int
@@ -68,24 +64,20 @@ class SpecificityResult:
     def asymmetry(self) -> float:
         """How much more the donor's concept rises than the target's own.
 
-        This, not the sign pattern, is the informative quantity. The donor's
-        language is **absent from the target's context** while the target's own
-        language is present, so any nonspecific sharpening of the readout should
-        favour the *target*. A ratio well above 1 therefore cannot come from
-        sharpening; it requires the patch to have carried content.
-
-        Returns ``inf`` when the target's concept does not rise at all.
+                The informative quantity, not the sign pattern: the donor's language is
+                **absent
+                from the target's context** while the target's own is present, so
+                nonspecific
+                sharpening should favour the *target*. ``inf`` when the target's does
+                not rise.
         """
         if self.delta_target.point <= 0:
             return float("inf") if self.delta_donor.point > 0 else 0.0
         return self.delta_donor.point / self.delta_target.point
 
     def verdict(self, *, min_asymmetry: float = 2.0) -> str:
-        """Classify the pattern.
-
-        ``min_asymmetry`` is a reporting threshold, not a test: the interval on
-        each delta is what carries significance.
-        """
+        """Classify the pattern; ``min_asymmetry`` is a reporting threshold, not a
+        test."""
         donor_up = self.delta_donor.excludes_zero and self.delta_donor.point > 0
         both_down = self.delta_donor.point < 0 and self.delta_target.point < 0
         if both_down:
@@ -114,10 +106,9 @@ class SpecificityResult:
 def mismatched_pairs(
     flexible: dict[str, Record], automatic: dict[str, Record], *, seed: int = 0
 ) -> list[tuple[Record, Record]]:
-    """Pair each automatic target with a flexible donor of a *different* language.
-
-    Instances are matched on everything except the latent value, so a difference in
-    outcome cannot come from passage length, template or operator family.
+    """Pair each automatic target with a flexible donor of a *different* language,
+        matched on everything else, so an outcome difference cannot come from length or
+        template.
     """
     instances = sorted(set(flexible) & set(automatic))
     rng = np.random.default_rng(seed)
@@ -148,11 +139,21 @@ def _entry(
     layers: list[int],
     token_id: int,
 ) -> float:
-    scores = []
-    for layer in layers:
-        logits = model.unembed(lens.transport(residuals[layer], layer)).float()[0]
-        scores.append(percentile_rank(logits, token_id))
-    return float(np.mean(scores))
+    """Mean ``R_z`` of ``token_id`` over ``layers``, at the answer position.
+
+    ``row=-1``, not ``[0]``: identical for a one-position patch and not once a span is
+    patched
+    (trap 7). ``R_z`` alone, since this experiment has no matched control set for
+    ``M_z``.
+    """
+    return float(
+        np.mean([
+            percentile_rank(
+                transported_logits(model, lens, residuals, layer, row=-1), token_id
+            )
+            for layer in layers
+        ])
+    )
 
 
 @torch.no_grad()
@@ -163,21 +164,40 @@ def specificity(
     components: list[Component],
     *,
     read_layers: list[int],
+    positions: PositionFn | None = None,
     max_seq_len: int = 512,
 ) -> list[SpecificityObservation]:
-    """Run the mismatched-donor patch and read out both concepts."""
+    """Run the mismatched-donor patch and read out both concepts; ``positions`` is
+        resolved per record and defaults to the final token, as the published results
+        used.
+    """
+    positions = positions or labelled(lambda _model, _record: [-1], "query:last1")
     observations: list[SpecificityObservation] = []
+    position_label = describe(positions)
     for donor, target in console.track(pairs, "processing"):
         if donor.latent_token_id == target.latent_token_id:
             raise ValueError(
                 f"{donor.id} and {target.id} share a latent value; this control "
                 f"requires them to differ"
             )
-        donor_acts = capture(model, donor.prompt, components, max_seq_len=max_seq_len)
+        donor_positions = positions(model, donor)
+        target_positions = positions(model, target)
+        if len(donor_positions) != len(target_positions):
+            raise ValueError(
+                f"{donor.id} gives {len(donor_positions)} positions but {target.id} "
+                f"gives {len(target_positions)}; the captured activation would not "
+                f"fit the site it is written into"
+            )
+        donor_acts = capture(
+            model, donor.prompt, components, positions=donor_positions,
+            max_seq_len=max_seq_len,
+        )
         _, clean = run_patched(
             model,
             target.prompt,
             {},
+            positions=target_positions,
+            read_positions=READ_AT,
             max_seq_len=max_seq_len,
             record_layers=read_layers,
         )
@@ -189,12 +209,15 @@ def specificity(
                 model,
                 target.prompt,
                 {component: donor_acts[component]},
+                positions=target_positions,
+                read_positions=READ_AT,
                 max_seq_len=max_seq_len,
                 record_layers=read_layers,
             )
             observations.append(
                 SpecificityObservation(
                     component=str(component),
+                    positions=position_label,
                     target_instance=target.semantic_instance_id,
                     donor_instance=donor.semantic_instance_id,
                     target_value=target.latent_value,
@@ -215,16 +238,23 @@ def specificity(
 def pool_specificity(
     observations: list[SpecificityObservation], *, seed: int = 0
 ) -> list[SpecificityResult]:
-    """Pool by component, with paired intervals over targets."""
-    by_component: dict[str, list[SpecificityObservation]] = {}
+    """Pool by component **and position mode**, paired over targets.
+
+    Pooling two position modes into one row is the collapse that made a null read as
+    significantly positive elsewhere; here it would halve the difference being measured.
+    """
+    by_cell: dict[tuple[str, str], list[SpecificityObservation]] = {}
     for observation in observations:
-        by_component.setdefault(observation.component, []).append(observation)
+        by_cell.setdefault(
+            (observation.component, observation.positions), []
+        ).append(observation)
 
     results = []
-    for component, group in by_component.items():
+    for (component, position_label), group in by_cell.items():
         results.append(
             SpecificityResult(
                 component=component,
+                positions=position_label,
                 delta_target=paired_bootstrap(
                     np.array([o.target_entry_patched for o in group]),
                     np.array([o.target_entry_clean for o in group]),

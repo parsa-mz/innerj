@@ -21,6 +21,7 @@ dependencies = [
     "torch>=2.9",
     "transformers>=5.0",
     "huggingface-hub>=1.0",
+    "datasets>=4.0",
     "numpy>=2.0",
     "pandas>=2.2",
     "pyarrow>=17",

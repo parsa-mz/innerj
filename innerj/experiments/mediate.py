@@ -1,62 +1,25 @@
 """Stage 6: is the behavioural effect mediated by J-space?
 
-This is the experiment that can undercut the paper, which is why it is worth running.
+A residual patch at L39 changes the answer to the predicted counterfactual ~44% of the
+time, but it carries *everything* the donor computed, so the effect may ride on the
+donor
+language's J-direction or on something travelling with it. Three arms: **full** (the
+reference), **ablated** (that direction projected out), and **random** (a matched-norm
+random direction projected out). Falling under ablated but not random means J-mediated.
 
-Patching the residual stream at L39 from a mismatched donor changes the answer to the
-predicted counterfactual ~44% of the time. But a residual patch carries *everything*
-the donor computed, not only the latent value. So the behavioural effect might be
-carried by the J-space representation of the donor's language --- the thing this paper
-is about --- or by some other component of the donor's stream that happens to travel
-with it. A readout showing the language arrived does not settle it: §9 already found a
-component that moves the readout and changes no answers.
-
-The test removes the candidate mediator and asks whether the effect survives:
-
-* **full** --- patch the donor's residual unchanged. The reference effect.
-* **ablated** --- patch it with the donor language's J-direction **projected out**, so
-  everything else the donor computed is preserved and only that direction is removed.
-* **random** --- patch it with a *random* direction of matched norm projected out. The
-  control that separates "removing this direction matters" from "removing any
-  direction of this size matters".
-
-If the effect falls under **ablated** but not **random**, it is J-mediated. If it
-survives both, the behavioural result rides on something other than the J-space
-representation and the framing has to change.
-
-**Which direction, exactly.** The readout is ``lambda_z(h) = W_U[z] . N(J_l h)``
-with ``N`` the model's final norm, so the direction that raises token ``z``'s lens
-logit is the *gradient*
-
-    grad_h lambda_z = J_l^T . DN(J_l h)^T . W_U[z].
-
-``J_l^T W_U[z]`` alone drops ``DN``, and is therefore the **static** pre-normaliser
-lens vector rather than the exact local logit-gradient direction. For RMSNorm the
-two differ in two specific ways, both implemented and both testable
-(:func:`readout_direction`): the unembedding row is weighted by the norm's gain,
-``u = W_U[z] * g``, and the component of ``u`` along the activation itself is
-removed. Up to a positive scale the static vector is the gradient with the radial
-component left in and the gain omitted --- close, but not the same vector, and §7's
-causal claim is about targeting the concept direction.
-
-Three derivations are available, which is the robustness experiment the difference
-deserves rather than a correction to be conceded:
-
-* ``static`` --- ``J^T W_U[z]``, what every published number here used;
-* ``gradient`` --- the exact normalised-logit gradient above;
-* ``margin`` --- the exact gradient of the *contrastive* score
-  ``lambda_z - mean_{c != z} lambda_c``, which is what a concept score should mean.
-  Because the readout is linear in the post-norm vector, this is the same formula
-  with ``W_U[z]`` replaced by ``W_U[z] - mean_{c != z} W_U[c]``.
-
-**And which control.** An isotropic random direction of matched *vector* norm is an
-easy control: it removes far less of the activation than the gold direction does, so
-the comparison partly measures how much was removed. The controls here are
-therefore graded by what they hold fixed --- see :data:`CONTROLS`.
+The readout is ``lambda_z(h) = W_U[z] . N(J_l h)``, so the direction raising ``z``'s
+lens
+logit is ``J_l^T . DN(J_l h)^T . W_U[z]``. ``J_l^T W_U[z]`` drops ``DN`` and is the
+**static** pre-normaliser vector; :func:`readout_direction` also offers the exact
+``gradient`` and the contrastive ``margin``. Controls are graded by what they hold fixed
+(:data:`CONTROLS`), because a random direction of matched *vector* norm removes far less
+of
+the activation than the gold one.
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 import numpy as np
 import torch
@@ -109,11 +72,8 @@ PROJECTIONS = ("absolute", "delta")
 
 
 def _final_norm_gain(model: HFLensModel) -> tuple[torch.Tensor, float]:
-    """The final norm's gain vector and epsilon, for the norm Jacobian.
-
-    Raises rather than guessing: a norm without a plain gain (a bias term, or a
-    ``layer_scalar``) makes the analytic Jacobian below wrong, and silently
-    returning ones would produce a plausible direction that is not the gradient.
+    """The final norm's gain and epsilon. Raises rather than guessing: a bias or a
+        ``layer_scalar`` would make the analytic Jacobian wrong.
     """
     norm = model._final_norm
     weight = getattr(norm, "weight", None)
@@ -138,9 +98,9 @@ def _logit_weight(
 ) -> torch.Tensor:
     """``W_U[z]``, or the contrastive ``W_U[z] - mean_{c != z} W_U[c]``.
 
-    The readout is linear in the post-norm vector, so a contrastive score over
-    concepts collapses to a single weight vector before the norm is differentiated.
-    That is why the margin gradient costs no more than the logit gradient.
+    The readout is linear in the post-norm vector, so the margin gradient costs no more
+    than
+    the logit gradient.
     """
     unembed = model._lm_head.weight  # [vocab, d_model]
     w = unembed[token_id].detach().float()
@@ -161,17 +121,11 @@ def readout_direction(
 ) -> torch.Tensor:
     """Unit residual direction at ``layer`` that raises ``token_id``'s lens score.
 
-    ``kind`` selects the derivation --- see :data:`DERIVATIONS` and the module
-    docstring. ``static`` needs no activation and returns ``J^T W_U[z]``; the other
-    two differentiate through the final norm and are therefore *activation
-    dependent*, so ``activation`` (the residual at the patch site, shape ``[d]`` or
-    ``[n_positions, d]``) is required. With ``[n_positions, d]`` the result is one
-    unit direction per position, because the gradient genuinely differs between
-    them.
-
-    All arithmetic is fp32. In bf16 the norm Jacobian's radial subtraction loses
-    most of its precision, which is the same reason the gauge check upstream runs
-    in fp32.
+    ``static`` needs no activation; ``gradient`` and ``margin`` differentiate through
+    the final
+    norm and so require ``activation``, giving one direction per position. fp32
+    throughout --
+    in bf16 the norm Jacobian's radial subtraction loses most of its precision.
     """
     if kind not in DERIVATIONS:
         raise ValueError(f"unknown derivation {kind!r}; expected one of {DERIVATIONS}")
@@ -221,11 +175,8 @@ def readout_direction(
 def j_direction(
     model: HFLensModel, lens: JacobianLens, layer: int, token_id: int
 ) -> torch.Tensor:
-    """The static direction, as every published number here used.
-
-    Kept as a name of its own because it is what the paper's §7 quotes, and
-    because renaming it would make the artifacts harder to trace. Prefer
-    :func:`readout_direction` for new work, which says which derivation it means.
+    """The static direction, under its own name because §7 quotes it and renaming would
+        make artifacts harder to trace.
     """
     return readout_direction(model, lens, layer, token_id, kind="static")
 
@@ -235,13 +186,11 @@ def orthogonalise(
 ) -> torch.Tensor:
     """``direction`` with its projection onto the span of ``others`` removed.
 
-    ``others`` is ``[k, d]``. The concept directions here have mean pairwise cosine
-    0.50, so removing the gold one also strips most of every rival; what survives
-    this is the part that belongs to this concept alone.
-
-    Raises if almost nothing survives: a residual of near-zero norm means the
-    concept has no independent direction at this layer, and normalising it would
-    turn numerical noise into a confident-looking intervention.
+    The concept directions have mean pairwise cosine 0.50, so removing the gold one
+    strips most
+    of every rival. Raises if almost nothing survives, since normalising a near-zero
+    residual
+    turns noise into a confident-looking intervention.
     """
     if others.ndim != 2:
         raise ValueError(f"expected others as [k, d], got {tuple(others.shape)}")
@@ -262,13 +211,8 @@ def orthogonalise(
 def remove(
     value: torch.Tensor, direction: torch.Tensor, *, scale: float = 1.0
 ) -> torch.Tensor:
-    """Subtract ``scale`` times ``value``'s component along ``direction``.
-
-    ``scale=1`` is a full projection; intermediate values give the dose--response
-    curve, which is what shows an effect grows with how much of the direction is
-    removed rather than switching on at full removal.
-
-    ``direction`` may be one unit vector or one per row of ``value``.
+    """Subtract ``scale`` times ``value``'s component along ``direction``; intermediate
+        scales give the dose-response curve.
     """
     d = direction.to(value.device, value.dtype)
     if d.ndim == 2 and value.ndim == 2:
@@ -281,12 +225,9 @@ def remove(
 
 
 def removed_norm(value: torch.Tensor, direction: torch.Tensor) -> float:
-    """How much of ``value``'s norm a full projection along ``direction`` removes.
-
-    The quantity the ``norm_matched`` control equalises. Matching *vector* norms
-    between a gold and a random direction does not match this, because the
-    activation is not isotropic: the gold direction is aligned with the stream and
-    a random one mostly is not.
+    """Norm a full projection along ``direction`` removes -- what ``norm_matched``
+        equalises. Matching *vector* norms does not match it, the activation being
+        anisotropic.
     """
     d = direction.to(value.device, value.dtype)
     if d.ndim == 2 and value.ndim == 2:
@@ -294,11 +235,6 @@ def removed_norm(value: torch.Tensor, direction: torch.Tensor) -> float:
     else:
         coefficient = value @ d
     return float(torch.linalg.vector_norm(coefficient.float()))
-
-
-def project_out(value: torch.Tensor, direction: torch.Tensor) -> torch.Tensor:
-    """Remove ``direction`` (unit) from ``value``, leaving everything else intact."""
-    return remove(value, direction, scale=1.0)
 
 
 @dataclass
@@ -320,6 +256,11 @@ class MediationObservation:
     is_donor_symbol: bool
     is_other: bool
     n_other: int
+    #: The distractor identities, not just the count. Same reason as
+    #: :class:`~innerj.experiments.counterfactual.CounterfactualObservation`: the
+    #: per-distractor contrast is unbiased only under uniform destruction, and
+    #: bounding the residual per pair needs the pair's own candidate set.
+    other_symbols: list[str] = field(default_factory=list)
     #: Which control direction was removed (:data:`CONTROLS`), how it was derived
     #: (:data:`DERIVATIONS`), and what fraction of it was taken out. All three are
     #: experimental factors, so all three are recorded per row rather than encoded
@@ -387,15 +328,12 @@ def mediate(
     projections: tuple[str, ...] = ("absolute",),
     concept_ids: list[int] | None = None,
 ) -> list[MediationObservation]:
-    """Run the ``full`` reference plus every (derivation, control, dose) cell.
+    """The ``full`` reference plus every (derivation, control, dose) cell.
 
-    ``full`` is measured once per pair --- it does not depend on any of the three
-    axes --- and is labelled ``mode="full"`` so the published artifacts stay
-    comparable. Every other row carries its factors explicitly.
-
-    The number of forward passes per pair is
-    ``1 + len(derivations) * len(controls) * len(doses)``, so widen one axis at a
-    time rather than taking the full product by default.
+    ``full`` is measured once per pair and labelled ``mode="full"`` so artifacts stay
+    comparable. Passes per pair are ``1 + derivations * controls * doses``, so widen one
+    axis at
+    a time.
     """
     for name, values, allowed in (
         ("derivations", derivations, DERIVATIONS),
@@ -460,6 +398,7 @@ def mediate(
             gold_symbol=gold_symbol,
             donor_symbol=donor_symbol,
             n_other=len(others),
+            other_symbols=sorted(others),
         )
 
         def record(
@@ -607,11 +546,8 @@ def mediate(
 def pool(
     observations: list[MediationObservation], *, seed: int = 0
 ) -> list[MediationResult]:
-    """Pool per (component, positions, mode), distractor-controlled as everywhere.
-
-    ``positions`` is part of the key. Pooling two position modes together is trap
-    16: on the counterfactual artifact it made a null at passage positions look
-    significantly positive.
+    """Pool per (component, positions, mode). ``positions`` is part of the key: pooling
+        position modes is trap 16.
     """
     # The wrong concept is part of the key: `wrong_all` emits one row per rival and
     # pooling them together would average a distribution into a single number, which
@@ -667,11 +603,8 @@ def pool(
 def wrong_concept_spread(
     results: list[MediationResult], *, component: str, projection: str = "absolute"
 ) -> dict:
-    """Summarise the ``wrong_all`` null across the concept vocabulary.
-
-    One pooled row per rival concept, so this reports how the *worst* wrong concept
-    does, not just the average. A gold effect that the best rival also reproduces
-    would not be concept-specific, and only the maximum can say that.
+    """The ``wrong_all`` null as one row per rival, so the *worst* rival is
+        visible -- a gold effect the best rival reproduces is not concept-specific.
     """
     rows = [
         r for r in results
@@ -708,23 +641,12 @@ def verdict(
 ) -> dict[str, str]:
     """Per component: is the behavioural effect carried by the concept direction?
 
-    The comparison is **paired per instance against a control direction**, not
-    against a fixed fraction of the effect. An earlier version thresholded the
-    proportional loss at 50% and therefore labelled a component with a 42% loss
-    "NOT J-MEDIATED" while its matched random control cost exactly 0% ---
-    substantively the same finding as one with a 56% loss. That is the same mistake
-    as comparing an answer rate to a constant instead of to chance, which this
-    project has now made three times.
-
-    **Which control decides it.** An isotropic random direction is the weakest of
-    them: it removes far less of the activation than the gold direction does, so
-    passing against it partly measures how much was removed. The verdict is
-    therefore taken against the *strongest control present*, in the order
-    ``wrong`` > ``norm_matched`` > ``random``, and it names which one it used. A
-    result that clears ``random`` and fails ``wrong`` is reported as failing.
-
-    Only full-dose rows enter the verdict; intermediate doses are the dose--response
-    curve, read separately.
+    **Paired per instance against a control direction**, never a fixed fraction of the
+    effect:
+    thresholding at 50% once labelled a 42%-loss component "NOT J-MEDIATED" while its
+    random
+    control cost 0%. Taken against the *strongest control present* -- ``wrong`` >
+    ``norm_matched`` > ``random`` -- and names which. Full-dose rows only.
     """
     def key(o: MediationObservation) -> str | None:
         if o.control == "none":

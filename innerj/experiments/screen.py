@@ -1,23 +1,15 @@
 """Stage 2: which components carry the difference between automatic and flexible?
 
-For a matched pair of runs over the same semantic instance, take one component's
-output from the *flexible* run and substitute it into the *automatic* run. A
-component that carries the write decision should move workspace entry toward the
-flexible level; most components should do nothing.
+Take one component's output from the *flexible* run and substitute it into the
+*automatic*
+run for a matched pair. Both directions are run, because a real write component must
+show
+both: ``flex_to_auto`` raises entry and ``auto_to_flex`` suppresses it. Only the first
+is as
+consistent with "any perturbation here nudges the readout".
 
-Both directions are run, because a real write component has to show both:
-
-* ``flex_to_auto`` -- injecting it into the automatic run *raises* entry;
-* ``auto_to_flex`` -- injecting the automatic value into the flexible run
-  *suppresses* entry.
-
-A component that only does the first is as consistent with "any perturbation here
-nudges the readout" as with a write mechanism.
-
-**Readout layers sit strictly above every screened component.** Patching at layer
-L cannot affect a readout below L, so averaging ``R_z`` over the whole band would
-reward shallow components purely for having more readout layers downstream of
-them. That would be an artifact of the aggregation, not a fact about the circuit.
+**Readout layers sit strictly above every screened component**, since averaging over the
+whole band would reward shallow components for having more readout layers downstream.
 """
 
 from __future__ import annotations
@@ -30,7 +22,7 @@ from jlens import JacobianLens
 from jlens.hf import HFLensModel
 
 from innerj import console
-from innerj.analysis.readout import concept_scores, forced_choice
+from innerj.analysis.readout import band_scores, forced_choice
 from innerj.analysis.stats import Estimate, paired_bootstrap, ratio_with_gap
 from innerj.patch import Component, capture, layer_type, run_patched
 from innerj.tasks.base import Record
@@ -44,11 +36,8 @@ def coarse_components(layers: list[int]) -> list[Component]:
 def head_components(
     model: HFLensModel, layers: list[int], *, include_mlp: bool = True
 ) -> list[Component]:
-    """Every individual head in ``layers``, plus each layer's MLP.
-
-    Head count is read per layer, not passed in: on a hybrid checkpoint a
-    full-attention layer has 24 heads and a linear-attention layer has 48, so one
-    global count would either skip heads or index past the projection.
+    """Every head in ``layers`` plus each layer's MLP. Head count is read per layer:
+        24 on a full-attention layer, 48 on a linear-attention one.
     """
     from innerj.patch import n_attention_heads
 
@@ -61,13 +50,11 @@ def head_components(
     return out
 
 
-def readout_layers(
+def layers_above(
     screened: list[int], n_layers: int, *, n_readout: int = 6
 ) -> list[int]:
-    """Layers strictly above every screened one, so all components are comparable.
-
-    Raises if the screened range leaves no room: a readout at or below a patched
-    layer measures nothing the patch could have caused.
+    """Layers strictly above every screened one; raises if none, a readout at or below a
+        patched layer measuring nothing the patch could have caused.
     """
     first = max(screened) + 1
     available = list(range(first, n_layers))
@@ -89,27 +76,12 @@ def _entry(
 ) -> tuple[float, float, float]:
     """Mean ``(R_z, -log10(rank), M_z)`` over ``layers`` from recorded residuals.
 
-    Reuses the residuals from the patched forward pass rather than running again,
-    which is what makes a 300-component sweep affordable.
-
-    All three metrics come back together because recovering a missing one costs a
-    full re-run of the sweep on GPU. Earlier versions returned ``R_z`` alone, and
-    the saturation question --- whether the transport window is an artifact of a
-    metric that is pinned above 0.999 in 92% of the cells it is read from ---
-    could not then be answered from any artifact on disk.
+    ``row=-1``: the same row here since this screen patches one position, but the index
+    is trap 7
+    and stating it keeps it right if the screen gains a span.
     """
-    scores = [
-        concept_scores(
-            model.unembed(lens.transport(residuals[layer], layer)).float()[0],
-            gold_token_id,
-            control_ids,
-        )
-        for layer in layers
-    ]
-    return (
-        float(np.mean([s.r_z for s in scores])),
-        float(np.mean([s.neg_log_rank for s in scores])),
-        float(np.mean([s.m_z for s in scores])),
+    return band_scores(
+        model, lens, residuals, layers, gold_token_id, control_ids, row=-1
     )
 
 
@@ -179,11 +151,9 @@ def screen(
     direction: str = "flex_to_auto",
     max_seq_len: int = 512,
 ) -> list[Observation]:
-    """Patch every component from source into target, for every pair.
-
-    ``pairs`` are ``(flexible, automatic)`` records of the same instance.
-    ``direction`` picks which is the donor. One donor capture and one clean run per
-    pair, then one forward pass per component.
+    """Patch every component from source into target, for every pair -- one donor
+    capture
+        and one clean run per pair, then one forward pass per component.
     """
     if direction not in ("flex_to_auto", "auto_to_flex"):
         raise ValueError(f"unknown direction {direction!r}")
@@ -258,10 +228,10 @@ def screen(
 def pool(observations: list[Observation], *, seed: int = 0) -> list[ScreenResult]:
     """Pool per-component effects with paired intervals over instances.
 
-    ``recovery`` is the fraction of the automatic-to-flexible entry gap the patch
-    closes. Its absolute gap travels with it: when the reference gap is near zero
-    the ratio is meaningless and is returned as ``nan`` rather than as a large
-    number.
+    ``recovery`` is the fraction of the automatic-to-flexible gap closed, with its
+    absolute gap
+    alongside: a near-zero reference gap makes the ratio meaningless and it comes back
+    ``nan``.
     """
     by_key: dict[tuple[str, str], list[Observation]] = {}
     for observation in observations:
@@ -319,16 +289,11 @@ def survivors(
 ) -> list[ScreenResult]:
     """Components whose effect clears zero, FDR-corrected across the sweep.
 
-    A bootstrap interval per component is not enough when hundreds are tested: the
-    top of an uncorrected ranking is mostly noise. The interval is converted to an
-    approximate two-sided p-value for the correction, and the interval itself is
-    still what gets reported.
-
-    ``metric`` selects which estimate is corrected --- ``delta_entry`` (``R_z``),
-    ``delta_logrank`` or ``delta_mz``. Correction is applied *within* a metric,
-    because the family being corrected over is the sweep's components, not the
-    metrics; running it across all three pooled would treat three views of one
-    measurement as three independent tests.
+    Correction runs *within* a metric, the family being the sweep's components rather
+    than the
+    metrics -- correcting across all three would treat three views of one measurement as
+    three
+    independent tests.
     """
     from scipy.stats import norm
 

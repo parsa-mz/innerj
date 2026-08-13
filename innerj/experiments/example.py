@@ -1,21 +1,21 @@
 """A worked example: what the J-lens actually reads at the query position.
 
-The paper's dependent variable is $R_z$, the percentile rank of the gold concept
-among the vocabulary. That is precise and completely opaque on first reading. This
-dumps, for **one** semantic instance, what the readout literally contains: the
-top-$k$ tokens at the query position at each band layer, and the gold language's
-rank, in every one of the four conditions.
+$R_z$ is precise and completely opaque on first reading. This dumps, for **one**
+instance,
+the top-$k$ tokens at the query position at each band layer and the gold language's
+rank, in
+all four conditions. It reads through ``lens.apply`` -- the same call the entry
+experiment
+uses -- so these are the same quantity the paper reports.
 
-It reads through ``lens.apply`` -- the same call ``innerj.entry`` uses -- so the
-ranks here are the same quantity the paper reports, on the same forward pass shape,
-not a re-derivation that could drift.
-
-One thing the figure must not be allowed to imply. Under the matched legend the
-operator table names every candidate language in *all four* arms, so the gold token
-is present in every prompt and its absolute rank is inflated everywhere. The
-comparison across conditions is unaffected because the inflation is symmetric, but
-the absolute levels are not evidence of unprompted representation. Hence the figure
-reports **rank per condition side by side** rather than one arm's ranks alone.
+One thing the figure must not imply: under the matched legend the table names every
+candidate
+in *all four* arms, so the gold token is present in every prompt and its absolute rank
+is
+inflated everywhere. The cross-condition comparison is unaffected, the inflation being
+symmetric, but the absolute levels are not evidence of unprompted representation --
+hence
+rank is reported per condition side by side.
 
 Usage:
     innerj example --records <jsonl> --instance lang_000000

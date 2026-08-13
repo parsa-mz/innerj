@@ -146,3 +146,116 @@ def test_recorded_layers_come_back(tiny_model):
     _, recorded = run_patched(tiny_model, PROMPT, {}, record_layers=[0, 2])
     assert set(recorded) >= {0, 2, tiny_model.n_layers - 1}
     assert recorded[0].shape == (1, tiny_model.d_model)
+
+
+class OneLayerLens:
+    """The narrowest lens `sweep` accepts: `source_layers` and `transport`.
+
+    Identity Jacobians, so the readout is the plain logit lens. The sweep's own
+    arithmetic is what is under test here, not the lens algebra.
+    """
+
+    def __init__(self, layers: list[int]):
+        self.source_layers = layers
+
+    def transport(self, residual, _layer):
+        return residual
+
+
+def _record(tiny_model, instance: str, latent: int, text: str):
+    from innerj.tasks.base import Condition, Record
+
+    return Record(
+        id=f"{instance}_flexible",
+        family="test",
+        condition=Condition.FLEXIBLE,
+        semantic_instance_id=instance,
+        template_id="t0",
+        context=text,
+        instruction="Answer:",
+        latent_name="thing",
+        latent_value=str(latent),
+        latent_token_id=latent,
+        control_token_ids=[latent + 1, latent + 2],
+        gold_answer="x",
+        candidate_answers=["x", "y"],
+        candidate_token_ids=[latent, latent + 1],
+    )
+
+
+def test_sweep_observations_repool_to_the_cells(tiny_model):
+    """Re-pooling the observations must reproduce every cell, exactly.
+
+    The invariant is silent when it breaks: a results file whose observations pool
+    to something else looks fine and quietly licenses a wrong re-analysis. This
+    project has already needed a split the sweep could not do -- when the tracking
+    grid went from 50 to 140 pairs, whether a head's emergence came from the added
+    pairs or from the donor reassignment was unanswerable, because only the pooled
+    cells were on disk.
+    """
+    import numpy as np
+
+    from innerj.analysis.stats import paired_bootstrap
+    from innerj.experiments.sweep import sweep
+
+    lens = OneLayerLens(list(range(tiny_model.n_layers)))
+    pairs = [
+        (_record(tiny_model, "i0", 100, PROMPT), _record(tiny_model, "i1", 200, OTHER)),
+        (_record(tiny_model, "i2", 300, OTHER), _record(tiny_model, "i3", 400, PROMPT)),
+    ]
+    components = [Component("resid", 1), Component("mlp", 1)]
+    cells, observations = sweep(tiny_model, lens, pairs, components, max_read_layer=3)
+
+    assert cells, "degenerate sweep: no cells"
+    assert observations, "degenerate sweep: no observations"
+
+    by_cell: dict[tuple[str, int], list[dict]] = {}
+    for row in observations:
+        by_cell.setdefault((row["component"], row["read_layer"]), []).append(row)
+
+    assert len(by_cell) == len(cells)
+    for cell in cells:
+        rows = by_cell[(cell.component, cell.read_layer)]
+        assert len(rows) == cell.n
+        # Order matters: the bootstrap is seeded, so a permuted file re-pools to a
+        # different interval and the mismatch would be silent.
+        assert [r["semantic_instance_id"] for r in rows] == list(cell.instances)
+        for attr, patched, clean in (
+            ("delta_donor", "donor_patched_r_z", "donor_clean_r_z"),
+            ("delta_donor_logrank", "donor_patched_logrank", "donor_clean_logrank"),
+            ("delta_donor_mz", "donor_patched_m_z", "donor_clean_m_z"),
+            ("delta_target", "target_patched_r_z", "target_clean_r_z"),
+        ):
+            repooled = paired_bootstrap(
+                np.array([r[patched] for r in rows]),
+                np.array([r[clean] for r in rows]),
+            )
+            assert repooled == getattr(cell, attr), f"{cell.component} {attr}"
+
+
+def test_sweep_observations_carry_every_factor(tiny_model):
+    """A row missing a factor cannot be re-analysed.
+
+    `cf_where_*_observations.jsonl` recorded no position mode, so splitting query
+    from passage had to rely on row order. `positions` is constant within a sweep
+    and is emitted anyway, for that reason.
+    """
+    from innerj.experiments.sweep import sweep
+
+    lens = OneLayerLens(list(range(tiny_model.n_layers)))
+    pairs = [
+        (_record(tiny_model, "i0", 100, PROMPT), _record(tiny_model, "i1", 200, OTHER))
+    ]
+    _, observations = sweep(
+        tiny_model, lens, pairs, [Component("attn", 1, head=3)],
+        positions=[-2, -1], max_read_layer=3,
+    )
+    required = {
+        "component", "kind", "patch_layer", "head", "read_layer", "distance",
+        "positions", "semantic_instance_id", "target_id", "donor_id",
+        "target_latent_token_id", "donor_latent_token_id",
+    }
+    assert required <= set(observations[0])
+    assert observations[0]["positions"] == [-2, -1]
+    assert observations[0]["head"] == 3
+    assert observations[0]["distance"] == observations[0]["read_layer"] - 1

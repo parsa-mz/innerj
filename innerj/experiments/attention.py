@@ -1,36 +1,20 @@
 """Does the gather head's attention *route* change with task demand?
 
-Every attention result elsewhere in this package patches the **output** of
-``o_proj``. That answers "what does this component contribute", and it is silent on
-the question a reviewer will ask about the gather: is the route opened on demand, or
-is it always open with different content on it? A component whose contribution moves
-with task demand is, functionally, a gate -- unless the route is identical across arms
-and only what travels along it differs.
+Every attention result elsewhere patches the **output** of ``o_proj``, which is silent
+on
+whether the route is opened on demand or always open with different content on it. This
+measures the route directly -- one clean forward pass per record, no patching, no lens
+--
+as the fraction of the query positions' attention mass landing on passage tokens.
 
-This module measures the route directly. For one clean forward pass per record it
-records the attention pattern at the gather layer, and reduces it to a single number
-per head: **how much of the query positions' attention mass lands on passage tokens**.
-No patching, no generation, no lens.
-
-Both outcomes answer the question, which is why this is worth a card:
-
-* mass is demand-modulated -> the gather is itself gated, and the gate is the
-  attention pattern. That is a routing gate, not an unmasker, and it is a positive
-  result rather than a concession.
-* mass is flat -> the route is open in both arms and only its content differs. That is
-  a stronger negative than we can currently state.
-
-Three things this cannot do, all stated rather than hidden. Only full-attention layers
-expose a pattern: the hybrid's gated delta-net layers have no attention matrix to
-read, so a linear-attention gather (which is what the tracking family uses) is out of
-scope here. Attention mass is not information flow -- a head can attend heavily to a
-span and write nothing useful from it. And most importantly, **the arms' instructions
-are not the same length** (12 tokens for control, 14 for flexible on the language
-family), so the query span covers a different mix of tokens in each arm and the
-absolute contrast is confounded. That is why every measurement here is taken at more
-than one layer: the interpretable quantity is not "does L39 move" --- on a first pass
-all 24 heads moved, which is a property of the prompt pair, not of the gather --- but
-"does L39 move **more than a layer that does not gather**".
+Both outcomes answer the question: demand-modulated mass makes the gather a routing
+gate,
+flat mass makes the negative stronger. Three limits: only full-attention layers expose a
+pattern, so a linear-attention gather is out of scope; attention mass is not information
+flow; and **the arms' instructions differ in length** (12 tokens against 14), so every
+layer's mass shifts and the interpretable quantity is not "does L39 move" but "does L39
+move
+**more than a layer that does not gather**".
 """
 
 from __future__ import annotations
@@ -103,10 +87,11 @@ class AttentionResult:
 def _attention_weights(model: HFLensModel, layer: int):
     """Yield a dict that fills with ``layer``'s attention probabilities.
 
-    ``output_attentions=True`` on the whole model would allocate a
-    ``[batch, heads, seq, seq]`` tensor for **every** layer and silently switch the
-    implementation away from sdpa. We want one layer, so the module is asked directly
-    and eager attention is forced only for the duration.
+    ``output_attentions=True`` on the whole model would allocate a ``[batch, heads, seq,
+    seq]``
+    tensor per layer and silently drop sdpa, so the module is asked directly and eager
+    attention
+    forced only for the duration.
     """
     block = model.layers[layer]
     if not hasattr(block, "self_attn"):
@@ -152,13 +137,11 @@ def attention_mass(
     position_label: str = "query:last12",
     max_seq_len: int = 512,
 ) -> list[AttentionObservation]:
-    """Passage attention mass at ``layer``, per head, for each record.
+    """Passage attention mass at ``layer``, per head, per record.
 
     The denominator is the full row, which sums to 1 under a causal softmax, so the
-    reported number is directly "what fraction of what this position looked at was
-    passage". The context boundary is located by
-    :func:`innerj.positions.context_length`, which verifies the context is a token
-    prefix rather than assuming it.
+    number is
+    directly "what fraction of what this position looked at was passage".
     """
     observations: list[AttentionObservation] = []
     for record in console.track(records, "recording attention"):
@@ -212,16 +195,11 @@ def pool(
 ) -> list[AttentionResult]:
     """Paired ``high`` minus ``low`` passage mass, per head.
 
-    Paired within the semantic instance, because the arms share a passage and the
-    absolute mass is dominated by how long that passage is.
-
-    Two measures per head, and both are reported because they fail differently. The
-    span measure averages over the last ``k`` positions, which on this family covers
-    the instruction --- and the instruction is 12 tokens in control and 14 in
-    flexible, so the two arms average over slightly different tokens. The last-token
-    measure has no such asymmetry: the final token is ``Answer:`` in every arm. If
-    the two disagree, the span asymmetry is carrying the result and neither should be
-    reported without the other.
+    Two measures, reported together because they fail differently: the span measure
+    covers the
+    instruction, which differs by two tokens between arms, while the last-token measure
+    has no
+    such asymmetry (``Answer:`` in every arm).
     """
     by_head: dict[tuple[int, int, str], dict[str, dict[str, tuple]]] = {}
     for o in observations:
@@ -266,14 +244,11 @@ def verdict(
 ) -> str:
     """What the pooled heads say about the routing-gate hypothesis.
 
-    The comparison that matters is **gather layer against control layers**, not the
-    gather layer against zero. Because the arms' instructions differ in length, the
-    query span covers different tokens in each arm and every layer's passage mass
-    shifts; on a first pass all 24 heads at L39 moved, which says nothing about the
-    gather. A routing gate predicts the gather layer moves *more* than layers that do
-    not gather.
-
-    Four outcomes, and three of them are negative results we would report as such.
+    **Gather layer against control layers**, not against zero: because the instructions
+    differ
+    in length every layer's mass shifts, and on a first pass all 24 heads at L39 moved.
+    A
+    routing gate predicts the gather layer moves *more*.
     """
     if not results:
         return "NO DATA"
