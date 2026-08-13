@@ -10,13 +10,13 @@ The answer we arrive at is **transport, not admission**. The variable is availab
 
 The paper is not in this repository. Every number in it is machine-checked against the artifact that produced it — `innerj audit` is that check, and takes the paper source with `--tex`.
 
-## 🔍 The question
+## The question
 
 Recent work identifies a set of directions whose contents a model can report on, a *verbalizable workspace*, and shows that a latent quantity is more present there when the task requires flexible reuse ([Gurnee et al., 2026](https://transformer-circuits.pub/2026/workspace/index.html)). That finding is behavioural and representational; the mechanism is left open.
 
 The vocabulary invites a guess: a workspace has contents, contents are *admitted*, admission implies a gate. We looked for that gate on an open-weight model, at the position the account predicts, and it is not there.
 
-## 📊 What we found
+## What we found
 
 | | |
 |---|---|
@@ -47,7 +47,7 @@ Each semantic instance yields five prompts over an **identical context**, so eve
 
 Two families: **language identity** on FLORES-200, which is *N*-way parallel so the counterfactual varies the latent variable and nothing else, and **object tracking** under swaps, where `z` is a progressively updated state.
 
-## ⚙️ Setup
+## Setup
 
 Python 3.13+, and one GPU with ~60 GB for the 27B primary checkpoint.
 
@@ -135,6 +135,6 @@ Every effect size carries a bootstrap interval clustered on the semantic instanc
 
 -----
 
-## 📄 License
+## License
 
 Code is MIT ([LICENSE](LICENSE)). **The released JGateBench records are CC BY-SA 4.0, not MIT** — every prompt quotes a FLORES-200 passage verbatim, and share-alike propagates. See [DATA_LICENSE.md](DATA_LICENSE.md). The vendored `jacobian-lens/` is cloned, not authored here, and carries its own terms.
