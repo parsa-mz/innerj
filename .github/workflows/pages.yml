@@ -37,7 +37,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Fail if the built page is missing or unbuilt
         # An empty or absent `site/` would otherwise deploy successfully and serve a 404,
@@ -47,16 +47,11 @@ jobs:
           grep -q 'href="/assets/' site/index.html \
             || { echo "site/ was built with a base; expected assets at the domain root"; exit 1; }
 
-      - uses: actions/configure-pages@v5
-        # `enablement` creates the Pages site if the repository has never had one. Without
-        # it the action fails with "Get Pages site failed ... Not Found", which reads as a
-        # workflow bug rather than as Pages simply never having been turned on.
-        with:
-          enablement: true
+      - uses: actions/configure-pages@v6
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
