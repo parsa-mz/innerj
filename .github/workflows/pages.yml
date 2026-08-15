@@ -44,8 +44,8 @@ jobs:
         # which reads as a Pages misconfiguration rather than as a forgotten local build.
         run: |
           test -s site/index.html || { echo "site/index.html missing -- run npm run build in web/"; exit 1; }
-          grep -q 'href="/assets/' site/index.html \
-            || { echo "site/ was built with a base; expected assets at the domain root"; exit 1; }
+          grep -q 'href="/innerj/assets/' site/index.html \
+            || { echo "site/ was built without base '/innerj/'; assets would 404 on a project page"; exit 1; }
 
       - uses: actions/configure-pages@v6
 
