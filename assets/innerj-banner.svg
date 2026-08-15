@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1600" height="420" viewBox="0 0 1600 420"
+     preserveAspectRatio="xMidYMid meet"
+     role="img" aria-labelledby="ij-title ij-desc">
+  <title id="ij-title">innerJ</title>
+  <desc id="ij-desc">The innerJ wordmark, and to its right an iceberg. A small ridged tip
+  sits above the waterline and a much larger keel below it; a single curve carries a marked
+  point from deep in the keel up across the waterline, standing for attention transporting a
+  latent variable into verbalizable form.</desc>
+
+  <defs>
+    <!-- Spans the whole word. The wordmark is one path with one transform, so a
+         userSpaceOnUse ramp over its ink box works; with a translate per glyph it would
+         resolve in each glyph's own space and restart on every letter. -->
+    <linearGradient id="ij-word" x1="0" y1="0" x2="2987" y2="0"
+                    gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#39D2F0"/>
+      <stop offset="55%" stop-color="#1C87DE"/>
+      <stop offset="100%" stop-color="#1A56DA"/>
+    </linearGradient>
+
+    <!-- Two faces, not one fill plus an overlay: at banner scale a low-opacity overlay
+         washed out and the peak read as a plain cone. -->
+    <linearGradient id="ij-lit" x1="0" y1="88" x2="0" y2="204"
+                    gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F2FDFF"/>
+      <stop offset="100%" stop-color="#A8E8FB"/>
+    </linearGradient>
+    <linearGradient id="ij-shade" x1="0" y1="88" x2="0" y2="204"
+                    gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6ACFF0"/>
+      <stop offset="100%" stop-color="#2593D2"/>
+    </linearGradient>
+
+    <linearGradient id="ij-keel" x1="0" y1="200" x2="0" y2="390"
+                    gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1B76CE"/>
+      <stop offset="100%" stop-color="#0B2A63"/>
+    </linearGradient>
+
+    <!-- The one non-blue element, so the transported variable is not lost in the ice. -->
+    <linearGradient id="ij-accent" x1="1306" y1="332" x2="1466" y2="96"
+                    gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F0921A"/>
+      <stop offset="100%" stop-color="#FFC65E"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ==================== wordmark ==================== -->
+  <!-- Space Grotesk, variable axis pinned to wght 700, shaped with HarfBuzz so the real
+       kerning is applied, then converted to outlines. Shipping outlines rather than a
+       font-family reference is what makes this render identically everywhere; there is no
+       font to be missing. Space Grotesk is SIL OFL 1.1. -->
+  <g transform="translate(100,119) scale(0.3242)">
+    <path fill="url(#ij-word)" d="M18 714V218H144V714ZM81 160Q47 160 23.5 138Q0 116 0 80Q0 44 23.5 22Q47 0 81 0Q116 0 139 22Q162 44 162 80Q162 116 139 138Q116 160 81 160ZM284 714V218H408V283H426Q438 257 471 233.5Q504 210 571 210Q629 210 672.5 236.5Q716 263 740 309.5Q764 356 764 418V714H638V428Q638 372 610.5 344Q583 316 532 316Q474 316 442 354.5Q410 393 410 462V714ZM900 714V218H1024V283H1042Q1054 257 1087 233.5Q1120 210 1187 210Q1245 210 1288.5 236.5Q1332 263 1356 309.5Q1380 356 1380 418V714H1254V428Q1254 372 1226.5 344Q1199 316 1148 316Q1090 316 1058 354.5Q1026 393 1026 462V714ZM1742 728Q1668 728 1611.5 696.5Q1555 665 1523.5 607.5Q1492 550 1492 472V460Q1492 382 1523 324.5Q1554 267 1610 235.5Q1666 204 1740 204Q1813 204 1867 236.5Q1921 269 1951 326.5Q1981 384 1981 460V503H1620Q1622 554 1658 586Q1694 618 1746 618Q1799 618 1824 595Q1849 572 1862 544L1965 598Q1951 624 1924.5 654.5Q1898 685 1854 706.5Q1810 728 1742 728ZM1621 409H1853Q1849 366 1818.5 340Q1788 314 1739 314Q1688 314 1658 340Q1628 366 1621 409ZM2093 714V218H2217V274H2235Q2246 244 2271.5 230Q2297 216 2331 216H2391V328H2329Q2281 328 2250 353.5Q2219 379 2219 432V714ZM2686 728Q2578 728 2514.5 669Q2451 610 2451 504V438H2583V504Q2583 551 2609 577.5Q2635 604 2682 604Q2726 604 2750.5 578Q2775 552 2775 504V134H2655V14H2987V134H2907V504Q2907 613 2848 670.5Q2789 728 2686 728Z"/>
+  </g>
+
+  <!-- ==================== iceberg ==================== -->
+  <!-- The keel, drawn first so the waterline and tip sit over it. Filled near-opaque with a
+       solid stroke: at 0.55 it went pale grey on a white page, and a low-opacity fill alone
+       disappears on a dark one. -->
+  <g>
+    <path d="M1160 202 H1452 L1474 254 L1440 304 L1372 352 L1322 386 L1268 350 L1210 298 L1166 250 Z"
+          fill="url(#ij-keel)" fill-opacity="0.82"
+          stroke="#3396E8" stroke-opacity="0.85" stroke-width="2.5"
+          stroke-linejoin="round"/>
+    <!-- Creases radiating toward the low point: volume without detail. -->
+    <path d="M1242 203 L1300 374 M1364 203 L1338 376"
+          fill="none" stroke="#7FD0F5" stroke-opacity="0.35" stroke-width="2"
+          stroke-linecap="round"/>
+  </g>
+
+  <!-- Waterline. -->
+  <path d="M1140 202 H1548" fill="none" stroke="#43CFF2" stroke-opacity="0.9"
+        stroke-width="3" stroke-linecap="round"/>
+
+  <!-- The tip: a ridge with a main summit and a lower secondary one, rather than a triangle.
+       Two faces meeting on a ridge that runs from the apex down to the waterline. The lit
+       face is near-white, so the silhouette carries a stroke to hold its shape on white. -->
+  <g stroke="#63C9EE" stroke-opacity="0.75" stroke-width="2" stroke-linejoin="round">
+    <path d="M1188 202 L1232 142 L1272 88 L1288 202 Z" fill="url(#ij-lit)"/>
+    <path d="M1272 88 L1316 142 L1348 116 L1382 164 L1424 202 H1288 Z" fill="url(#ij-shade)"/>
+  </g>
+
+  <!-- ==================== transport ==================== -->
+  <!-- The latent variable, deep in the keel, and one curve carrying it up across the line.
+       Routed clear of the tip's right shoulder so the two shapes do not overlap. -->
+  <circle cx="1306" cy="332" r="8.5" fill="#F0921A"/>
+  <path d="M1306 332 C 1394 314 1450 244 1466 112"
+        fill="none" stroke="url(#ij-accent)" stroke-width="6" stroke-linecap="round"/>
+  <path d="M1466 78 L1448 116 L1484 116 Z" fill="#FFC65E"/>
+</svg>

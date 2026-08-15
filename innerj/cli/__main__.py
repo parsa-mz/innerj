@@ -19,6 +19,7 @@ import sys
 COMMANDS: dict[str, tuple[str, str]] = {
     "build-dataset": ("build_dataset",
                       "generate a task family, enforcing the invariants"),
+    "flores": ("flores", "stub a dataset for release, or rebuild it from FLORES"),
     "stage1": ("stage1", "is workspace entry different from availability?"),
     "probe": ("probe", "is the latent variable decodable in every arm?"),
     "screen": ("screen", "which components move the readout?"),

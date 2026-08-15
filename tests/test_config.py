@@ -1,63 +1,25 @@
-"""Guards for path resolution and the .env reader.
+"""Guards for artifact paths and the CLI's shared argument handling.
 
-A wrong path here does not raise: it writes artifacts somewhere unexpected, or
-reads a stale tree and produces plausible numbers from the wrong run. So the
-cases pinned are the ones a naive reader silently gets wrong.
+A wrong path here does not raise: it writes artifacts somewhere unexpected, or reads a
+stale tree and produces plausible numbers from the wrong run. So the cases pinned are
+the ones a naive reader silently gets wrong.
 """
 
 from __future__ import annotations
 
 import json
-import os
 
 import pytest
 
-from innerj.config import _load_dotenv, _path
 
+def test_every_path_is_repo_relative_with_nothing_to_configure():
+    """There is no .env: a fresh checkout must resolve every location on its own."""
+    from innerj import config
 
-@pytest.mark.parametrize(
-    ("line", "expected"),
-    [
-        ("KEY=/tmp/plain", "/tmp/plain"),
-        ("export KEY=/tmp/exported", "/tmp/exported"),
-        ('KEY="/tmp/double"', "/tmp/double"),
-        ("KEY='/tmp/single'", "/tmp/single"),
-        ("KEY = /tmp/spaced", "/tmp/spaced"),
-        ("KEY=/tmp/commented  # scratch volume", "/tmp/commented"),
-        # A quoted value keeps its hash: a path may legitimately contain one.
-        ('KEY="/tmp/hash#1"', "/tmp/hash#1"),
-        ("KEY=", ""),
-    ],
-)
-def test_dotenv_reads_what_people_actually_write(tmp_path, monkeypatch, line, expected):
-    monkeypatch.delenv("KEY", raising=False)
-    env = tmp_path / ".env"
-    env.write_text(f"# a comment\n\n{line}\n")
-    _load_dotenv(env)
-    assert os.environ["KEY"] == expected
-
-
-def test_the_environment_wins_over_the_file(tmp_path, monkeypatch):
-    """An explicit export must override .env, or a one-off run cannot be steered."""
-    monkeypatch.setenv("KEY", "/from/environment")
-    env = tmp_path / ".env"
-    env.write_text("KEY=/from/file\n")
-    _load_dotenv(env)
-    assert os.environ["KEY"] == "/from/environment"
-
-
-def test_a_missing_dotenv_is_not_an_error(tmp_path):
-    _load_dotenv(tmp_path / "nope.env")
-
-
-def test_path_falls_back_to_its_default(monkeypatch, tmp_path):
-    monkeypatch.delenv("INNERJ_TEST_ROOT", raising=False)
-    assert _path("INNERJ_TEST_ROOT", tmp_path / "fallback").name == "fallback"
-
-
-def test_path_expands_a_tilde(monkeypatch):
-    monkeypatch.setenv("INNERJ_TEST_ROOT", "~/scratch")
-    assert not str(_path("INNERJ_TEST_ROOT", None)).startswith("~")
+    for name in ("DATA_ROOT", "LOG_DIR", "FIGURE_DIR", "PAPER_TEX"):
+        value = getattr(config, name)
+        assert value.is_absolute(), name
+        assert config.REPO_ROOT in value.parents, f"{name} escapes the repo"
 
 
 # --- shared CLI flags ---------------------------------------------------------

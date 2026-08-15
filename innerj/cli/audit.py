@@ -131,13 +131,13 @@ def main() -> None:
     parser.add_argument(
         "--tex", type=Path, default=config.PAPER_TEX,
         help="paper source to check. Defaults to the ICLR manuscript in this "
-        "repository; override it or set INNERJ_PAPER_TEX.",
+        "repository; pass --tex to point elsewhere.",
     )
     args = parser.parse_args()
 
     if not args.tex.is_file():
         raise SystemExit(
-            f"no paper source at {args.tex}. Pass --tex or set INNERJ_PAPER_TEX."
+            f"no paper source at {args.tex}. Pass --tex."
         )
     stale = check_figure_deck(args.tex)
     if stale:

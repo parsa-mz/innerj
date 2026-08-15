@@ -114,18 +114,23 @@ INSTRUCTIONS: dict[bool, dict[str, str]] = {
 
 
 def _snapshot_dir() -> str:
-    """Locate the downloaded FLORES snapshot in the shared HuggingFace cache."""
-    pattern = (
-        "/mnt/cache/huggingface/hub/datasets--haoranxu--FLORES-200/snapshots/*/"
-    )
-    matches = sorted(glob.glob(pattern))
-    if not matches:
-        raise FileNotFoundError(
-            "FLORES-200 not in the cache. Run:\n"
-            "  HF_HOME=/mnt/cache/huggingface hf download "
-            f"{FLORES_REPO} --repo-type dataset"
+    """Locate the downloaded FLORES snapshot in the HuggingFace cache.
+
+    Resolved through ``huggingface_hub``, so it finds the standard cache wherever that
+    is. It was once an absolute glob into one machine's shared cache, and ran nowhere
+    else.
+    """
+    from huggingface_hub import snapshot_download
+
+    try:
+        return snapshot_download(
+            FLORES_REPO, repo_type="dataset", local_files_only=True
         )
-    return matches[-1]
+    except Exception as exc:  # not cached, or cache unreadable
+        raise FileNotFoundError(
+            f"FLORES-200 not in the HuggingFace cache ({exc}). Run:\n"
+            f"  hf download {FLORES_REPO} --repo-type dataset"
+        ) from exc
 
 
 def load_parallel(languages: list[str]) -> pd.DataFrame:

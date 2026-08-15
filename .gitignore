@@ -220,10 +220,6 @@ __marimo__/
 # Vendored reference implementation: cloned, not authored here.
 jacobian-lens/
 
-# Local environment
-.env
-
-/data/
 logs/
 
 paper/

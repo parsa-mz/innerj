@@ -760,9 +760,6 @@ def test_the_matched_length_arms_tokenise_to_one_length():
     BPE merges, so only the real vocabulary can test it.
     """
     pytest.importorskip("transformers")
-    import os
-
-    os.environ.setdefault("HF_HOME", "/mnt/cache/huggingface")
     from transformers import AutoTokenizer
 
     from innerj.tasks.language import INSTRUCTIONS
