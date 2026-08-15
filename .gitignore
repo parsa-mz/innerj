@@ -164,8 +164,8 @@ venv.bak/
 # Rope project settings
 .ropeproject
 
-# mkdocs documentation
-/site
+# UI source code
+/web/
 
 # mypy
 .mypy_cache/
@@ -217,7 +217,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Vendored reference implementation: cloned, not authored here.
 jacobian-lens/
 
 logs/
@@ -227,10 +226,8 @@ scratchpad/
 /workflows/
 CLAUDE.md
 
-# Default figure output. Point INNERJ_FIGURE_DIR at the paper to rebuild in place.
 /figures/
 
-# Internal notes, kept out of the tree.
 /temp_*.txt
 /pubtool*
 

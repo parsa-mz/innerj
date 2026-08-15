@@ -1,0 +1,1 @@
+import{n as e}from"./animation.fuRY_-ql.js";import{t}from"./scroll.BC3xbY6D.js";var n=document.querySelector(`[data-berg]`),r=document.querySelector(`.hero`);if(n&&r&&!window.matchMedia(`(prefers-reduced-motion: reduce)`).matches){let i=t({target:r,sync:!0,enter:`top top`,leave:`top bottom`});e(n,{translateY:[0,150],opacity:[1,.2],ease:`linear`,autoplay:i})}

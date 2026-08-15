@@ -1,0 +1,57 @@
+name: Deploy project page
+
+# Publishes the committed `site/` folder as-is. It does NOT build: the Astro source in `web/`
+# is deliberately not in the repository (`.gitignore`), so there is nothing here to build from.
+# Run `npm run build` in `web/` locally and commit the resulting `site/`.
+#
+# The uploaded folder becomes the site root, and the page is served from `/`, so
+# astro.config.mjs sets no `base`.
+#
+# `.gitignore` ignores `/workflows/` with a leading slash on purpose. Unanchored, the
+# pattern also matched `.github/workflows/`, which silently excluded this file and made
+# the deploy look broken with nothing to point at.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a run finish rather than cancelling it: a half-finished Pages deploy serves a
+# partially updated site.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fail if the built page is missing or unbuilt
+        # An empty or absent `site/` would otherwise deploy successfully and serve a 404,
+        # which reads as a Pages misconfiguration rather than as a forgotten local build.
+        run: |
+          test -s site/index.html || { echo "site/index.html missing -- run npm run build in web/"; exit 1; }
+          grep -q 'href="/assets/' site/index.html \
+            || { echo "site/ was built with a base; expected assets at the domain root"; exit 1; }
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
