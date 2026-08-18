@@ -6,6 +6,10 @@
 
 **A latent variable does not reach a language model's self-report because a gate opens. It gets there because attention carries it.**
 
+[![arXiv](https://img.shields.io/badge/arXiv-2608.15022-b31b1b.svg)](https://arxiv.org/abs/2608.15022)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.13+](https://img.shields.io/badge/python-3.13+-3776ab.svg)](pyproject.toml)
+
 </div>
 
 ## Overview
@@ -17,7 +21,7 @@ We looked for that gate on an open-weight model, at the position the account pre
 - **Availability is not the variable.** One shared linear probe decodes the latent in every arm, including the arm needing it for nothing, at 6.4-9.0x its corrected floor. Demand changes visibility, not presence.
 - **Attention does the carrying.** At matched readout distance, transport concentrates in a mid-depth window by >=17x over anywhere shallower. No tested MLP contributes positively inside it.
 
-This repository is the benchmark (**JGateBench**) and the causal toolkit. The paper is not in it; `innerj audit` checks every number in the paper against the artifact that produced it.
+This repository is the benchmark (**JGateBench**) and the causal toolkit. The paper is [arXiv:2608.15022](https://arxiv.org/abs/2608.15022).
 
 ## Installation
 
@@ -89,6 +93,25 @@ innerj/tasks/                           generators, with the invariants as const
 innerj/figures/                         the deck and its style, built from artifacts only
 tests/                                  the invariants whose violation is silent
 data/language/ data/tracking/           JGateBench records
+```
+
+## Paper
+
+**Gathered, Not Admitted: How Attention Brings a Latent Variable into Verbalizable Form**
+
+Parsa Mazaheri. [arXiv:2608.15022](https://arxiv.org/abs/2608.15022) · [PDF](https://arxiv.org/pdf/2608.15022)
+
+```bibtex
+@misc{mazaheri2026gathered,
+  title         = {Gathered, Not Admitted: How Attention Brings a Latent Variable
+                   into Verbalizable Form},
+  author        = {Mazaheri, Parsa},
+  year          = {2026},
+  eprint        = {2608.15022},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.AI},
+  url           = {https://arxiv.org/abs/2608.15022}
+}
 ```
 
 ## License
